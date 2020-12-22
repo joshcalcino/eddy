@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import os
 import time
 import emcee
 import numpy as np
@@ -7,6 +8,7 @@ from astropy.io import fits
 from astropy.convolution import convolve, convolve_fft, Gaussian2DKernel
 import scipy.constants as sc
 import warnings
+import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore")
 
@@ -109,10 +111,14 @@ class rotationmap:
         self.shadowed_oversample = 2.0
         self.shadowed_method = 'nearest'
 
+        # Get the name of the file
+        basename = os.path.basename(self.path)
+        self.name = os.path.splitext(basename)
+
     def fit_map(self, p0, params, r_min=None, r_max=None, optimize=True,
                 nwalkers=None, nburnin=300, nsteps=100, scatter=1e-3,
-                plots=None, returns=None, pool=None, emcee_kwargs=None,
-                niter=1, shadowed=False):
+                plots=['bestfit', 'residual'], returns=['percentiles'], pool=None, emcee_kwargs=None,
+                niter=1, shadowed=False, savefigs=False):
         """
         Fit a rotation profile to the data. Note that for a disk with
         a non-zero height, the sign of the inclination dictates the direction
@@ -168,7 +174,7 @@ class rotationmap:
                 ``'bestfit'``, ``'residual'``, or ``'none'`` if no plots are to
                 be plotted. By default, all are plotted.
             returns (optional[list]): List of items to return. Can contain
-                ``'samples'``, ``'percentiles'``, ``'dict'`` or ``'none'``. By
+                ``'samples'``, ``'percentiles'``, ``'dict'``. By
                 default only ``'percentiles'`` are returned.
             pool (optional): An object with a `map` method.
             emcee_kwargs (Optional[dict]): Dictionary to pass to the emcee
@@ -228,7 +234,6 @@ class rotationmap:
         self.ivar = self._calc_ivar(temp)
 
         # Set up and run the MCMC with emcee.
-        time.sleep(0.5)
         nwalkers = 2 * p0.size if nwalkers is None else nwalkers
         emcee_kwargs = {} if emcee_kwargs is None else emcee_kwargs
         emcee_kwargs['scatter'], emcee_kwargs['pool'] = scatter, pool
@@ -249,27 +254,27 @@ class rotationmap:
             medians = self.verify_params_dictionary(medians)
 
         # Diagnostic plots.
-        if plots is None:
-            plots = ['mask', 'walkers', 'corner', 'bestfit', 'residual']
-        plots = np.atleast_1d(plots)
-        if 'none' in plots:
-            plots = []
-        if 'mask' in plots:
-            self.plot_data(ivar=self.ivar)
-        if 'walkers' in plots:
-            rotationmap._plot_walkers(sampler.chain.T, nburnin, labels)
-        if 'corner' in plots:
-            rotationmap._plot_corner(samples, labels)
-        if 'bestfit' in plots:
-            self._plot_bestfit(medians, ivar=self.ivar)
-        if 'residual' in plots:
-            self._plot_residual(medians, ivar=self.ivar)
+        if plots is not None:
+            plots = np.atleast_1d(plots)
+
+            if savefigs is not None:
+                save_name = self.name
+
+            if 'none' in plots:
+                plots = []
+            if 'mask' in plots:
+                self.plot_data(ivar=self.ivar, save_name=save_name)
+            if 'walkers' in plots:
+                rotationmap._plot_walkers(sampler.chain.T, nburnin, labels, save_name=save_name)
+            if 'corner' in plots:
+                rotationmap._plot_corner(samples, labels, save_name=save_name)
+            if 'bestfit' in plots:
+                self._plot_bestfit(medians, ivar=self.ivar, save_name=save_name)
+            if 'residual' in plots:
+                self._plot_residual(medians, ivar=self.ivar, save_name=save_name)
 
         # Generate the output.
         if returns is None:
-            returns = ['percentiles']
-        returns = np.atleast_1d(returns)
-        if 'none' in returns:
             return None
         to_return = []
         if 'samples' in returns:
@@ -442,7 +447,7 @@ class rotationmap:
         r, t, z = coords
         return r * np.cos(t), r * np.sin(t), z
 
-    def plot_data(self, levels=None, ivar=None, return_fig=False):
+    def plot_data(self, levels=None, ivar=None, return_fig=False, save_name=None):
         """
         Plot the first moment map. By default will clip the velocity contours
         such that the velocities around the systemic velocity are highlighted.
@@ -453,11 +458,11 @@ class rotationmap:
                 draw a solid contour around the regions with finite ``ivar``
                 values and fill regions not considered.
             return_fig (optional[bool]): Return the figure.
+            save_name (optional[string]): Name of the figure.
         Returns:
             fig (Matplotlib figure): If ``return_fig`` is ``True``. Can access
                 the axes through ``fig.axes`` for additional plotting.
         """
-        import matplotlib.pyplot as plt
         fig, ax = plt.subplots()
         if levels is None:
             levels = np.nanpercentile(self.data, [2, 98]) - self.vlsr
@@ -475,6 +480,10 @@ class rotationmap:
             ax.contourf(self.xaxis, self.yaxis, ivar,
                         [-1.0, 0.0], colors='k', alpha=0.5)
         self._gentrify_plot(ax)
+
+        if save_name is not None:
+            plt.savefig('{0}_M1.png'.format(save_name), dpi=300)
+
         if return_fig:
             return fig
 
@@ -505,7 +514,6 @@ class rotationmap:
             print("WARNING: scipy.optimize did not converge.")
             print("Starting positions:")
         print('\tp0 =', ['%.2e' % t for t in theta])
-        time.sleep(.3)
         return theta
 
     def _run_mcmc(self, p0, params, nwalkers, nburnin, nsteps, **kwargs):
@@ -1216,7 +1224,6 @@ class rotationmap:
 
     @staticmethod
     def colormap():
-        import matplotlib.pyplot as plt
         import matplotlib.colors as mcolors
         c2 = plt.cm.Reds(np.linspace(0, 1, 32))
         c1 = plt.cm.Blues_r(np.linspace(0, 1, 32))
@@ -1229,9 +1236,8 @@ class rotationmap:
         return [self.xaxis[0], self.xaxis[-1], self.yaxis[0], self.yaxis[-1]]
 
     def _plot_bestfit(self, params, ivar=None, residual=False,
-                      return_ax=False):
+                      return_ax=False, save_name=None):
         """Plot the best-fit model."""
-        import matplotlib.pyplot as plt
         ax = plt.subplots()[1]
         vkep = self._make_model(params) * 1e-3
         levels = np.nanpercentile(vkep, [2, 98])
@@ -1248,13 +1254,16 @@ class rotationmap:
                      rotation=270, labelpad=15)
         cb.minorticks_on()
         self._gentrify_plot(ax)
+
+        if save_name is not None:
+            plt.savefig('{0}_best_fit.png'.format(save_name), dpi=300)
+
         if return_ax:
             return ax
 
-    def _plot_residual(self, params, ivar=None, return_ax=False):
+    def _plot_residual(self, params, ivar=None, return_ax=False, save_name=None):
         """Plot the residual from the provided model."""
         import matplotlib.cm as cm
-        import matplotlib.pyplot as plt
         ax = plt.subplots()[1]
         vres = self.data * 1e3 - self._make_model(params)
         levels = np.where(self.ivar != 0.0, vres, np.nan)
@@ -1273,6 +1282,10 @@ class rotationmap:
                      rotation=270, labelpad=15)
         cb.minorticks_on()
         self._gentrify_plot(ax)
+
+        if save_name is not None:
+            plt.savefig('{0}_residuals.png'.format(save_name), dpi=300)
+
         if return_ax:
             return ax
 
@@ -1315,7 +1328,6 @@ class rotationmap:
 
         # Dummy axis to overplot.
         if ax is None:
-            import matplotlib.pyplot as plt
             ax = plt.subplots()[1]
 
         # Front half of the disk.
@@ -1483,11 +1495,10 @@ class rotationmap:
             return fig
 
     @staticmethod
-    def _plot_walkers(samples, nburnin=None, labels=None, histogram=True):
+    def _plot_walkers(samples, nburnin=None, labels=None, histogram=True, save_name=None):
         """Plot the walkers to check if they are burning in."""
 
         # Import matplotlib.
-        import matplotlib.pyplot as plt
         from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 
         # Check the length of the label list.
@@ -1527,13 +1538,19 @@ class rotationmap:
                 ax1.spines['bottom'].set_visible(False)
                 ax1.spines['top'].set_visible(False)
 
+            if save_name is not None:
+                plt.savefig(save_name + '_{0}.png'.format(labels[s]) , dpi=300)
+
     @staticmethod
-    def _plot_corner(samples, labels=None, quantiles=None):
+    def _plot_corner(samples, labels=None, quantiles=None, save_name=None):
         """Plot the corner plot to check for covariances."""
         import corner
         quantiles = [0.16, 0.5, 0.84] if quantiles is None else quantiles
         corner.corner(samples, labels=labels, title_fmt='.4f', bins=30,
                       quantiles=quantiles, show_titles=True)
+        if save_name is not None:
+            plt.savefig(save_name + '_corner.png', dpi=300)
+
 
     def plot_beam(self, ax, dx=0.125, dy=0.125, **kwargs):
         """Plot the sythensized beam on the provided axes."""
