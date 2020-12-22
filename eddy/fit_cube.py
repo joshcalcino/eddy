@@ -113,7 +113,7 @@ class rotationmap:
 
         # Get the name of the file
         basename = os.path.basename(self.path)
-        self.name = os.path.splitext(basename)
+        self.name = os.path.splitext(basename)[0]
 
     def fit_map(self, p0, params, r_min=None, r_max=None, optimize=True,
                 nwalkers=None, nburnin=300, nsteps=100, scatter=1e-3,
