@@ -11,7 +11,6 @@ import warnings
 import matplotlib.pyplot as plt
 from . import models
 from scipy.optimize import minimize
-from astropy.convolution import
 from scipy.interpolate import griddata
 import scipy.constants as sc
 from scipy.ndimage import shift
