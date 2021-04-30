@@ -5,10 +5,25 @@ import time
 import emcee
 import numpy as np
 from astropy.io import fits
-from astropy.convolution import convolve, convolve_fft, Gaussian2DKernel
-import scipy.constants as sc
+from astropy.convolution import (convolve, convolve_fft, Gaussian2DKernel, Gaussian1DKernel
+)
 import warnings
 import matplotlib.pyplot as plt
+from . import models
+from scipy.optimize import minimize
+from astropy.convolution import
+from scipy.interpolate import griddata
+import scipy.constants as sc
+from scipy.ndimage import shift
+from scipy.ndimage import rotate
+import matplotlib.colors as mcolors
+import matplotlib.cm as cm
+# Import matplotlib.
+from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
+import corner
+from matplotlib.patches import Ellipse
+from matplotlib.ticker import MaxNLocator
+
 
 warnings.filterwarnings("ignore")
 
@@ -491,7 +506,6 @@ class rotationmap:
 
     def _optimize_p0(self, theta, params, **kwargs):
         """Optimize the initial starting positions."""
-        from scipy.optimize import minimize
 
         # TODO: implement bounds.
         # TODO: cycle through parameters one at a time for a better fit.
@@ -853,7 +867,6 @@ class rotationmap:
         x_rot, y_rot = x_rot + x0, y_rot + y0
 
         # Grid the disk.
-        from scipy.interpolate import griddata
         disk = (x_rot.flatten(), y_rot.flatten())
         grid = (self.xaxis[None, :], self.yaxis[:, None])
         r_obs = griddata(disk, rdisk.flatten(), grid,
@@ -975,7 +988,6 @@ class rotationmap:
                 kernel = np.hanning(self.bmaj / self.dpix)
                 kernel /= kernel.sum()
             else:
-                from astropy.convolution import Gaussian1DKernel
                 kernel = Gaussian1DKernel(smooth / self.fwhm / self.dpix)
             resi = np.convolve(resi, kernel, mode='same')
         mask = np.logical_and(abs(self.xaxis) <= r_max,
@@ -1035,7 +1047,6 @@ class rotationmap:
                 kernel = np.hanning(self.bmaj / self.dpix)
                 kernel /= kernel.sum()
             else:
-                from astropy.convolution import Gaussian1DKernel
                 kernel = Gaussian1DKernel(smooth / self.fwhm / self.dpix)
             resi = np.convolve(resi, kernel, mode='same')
         mask = np.logical_and(abs(self.yaxis) <= r_max,
@@ -1067,8 +1078,6 @@ class rotationmap:
         Returns:
             popt (list): Best-fit parameters of (z0, psi[, z1, phi]).
         """
-
-        from scipy.optimize import curve_fit
 
         def z_func(x, z0, psi, z1=0.0, phi=1.0):
             return z0 * x**psi + z1 * x**phi
@@ -1157,7 +1166,7 @@ class rotationmap:
                 will shift the attached ``rotationmap.data``.
             save (optional[bool]): If True, overwrite ``rotationmap.data``.
         """
-        from scipy.ndimage import shift
+
         data = self.data.copy() if data is None else data
         to_shift = np.where(np.isfinite(data), data, 0.0)
         data = shift(to_shift, [-dy / self.dpix, dx / self.dpix])
@@ -1175,7 +1184,7 @@ class rotationmap:
                 will shift the attached ``rotationmap.data``.
             save (optional[bool]): If True, overwrite ``rotationmap.data``.
         """
-        from scipy.ndimage import rotate
+
         data = self.data.copy() if data is None else data
         to_rotate = np.where(np.isfinite(data), data, 0.0)
         data = rotate(to_rotate, PA - 90.0, reshape=False)
@@ -1224,7 +1233,7 @@ class rotationmap:
 
     @staticmethod
     def colormap():
-        import matplotlib.colors as mcolors
+
         c2 = plt.cm.Reds(np.linspace(0, 1, 32))
         c1 = plt.cm.Blues_r(np.linspace(0, 1, 32))
         c1 = np.vstack([c1, [1, 1, 1, 1]])
@@ -1263,7 +1272,7 @@ class rotationmap:
 
     def _plot_residual(self, params, ivar=None, return_ax=False, save_name=None):
         """Plot the residual from the provided model."""
-        import matplotlib.cm as cm
+
         ax = plt.subplots()[1]
         vres = self.data * 1e3 - self._make_model(params)
         levels = np.where(self.ivar != 0.0, vres, np.nan)
@@ -1498,9 +1507,6 @@ class rotationmap:
     def _plot_walkers(samples, nburnin=None, labels=None, histogram=True, save_name=None):
         """Plot the walkers to check if they are burning in."""
 
-        # Import matplotlib.
-        from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
-
         # Check the length of the label list.
         if labels is None:
             if samples.shape[0] != len(labels):
@@ -1544,7 +1550,7 @@ class rotationmap:
     @staticmethod
     def _plot_corner(samples, labels=None, quantiles=None, save_name=None):
         """Plot the corner plot to check for covariances."""
-        import corner
+
         quantiles = [0.16, 0.5, 0.84] if quantiles is None else quantiles
         corner.corner(samples, labels=labels, title_fmt='.4f', bins=30,
                       quantiles=quantiles, show_titles=True)
@@ -1554,7 +1560,6 @@ class rotationmap:
 
     def plot_beam(self, ax, dx=0.125, dy=0.125, **kwargs):
         """Plot the sythensized beam on the provided axes."""
-        from matplotlib.patches import Ellipse
         beam = Ellipse(ax.transLimits.inverted().transform((dx, dy)),
                        width=self.bmin, height=self.bmaj, angle=-self.bpa,
                        fill=kwargs.get('fill', False),
@@ -1566,7 +1571,6 @@ class rotationmap:
 
     def _gentrify_plot(self, ax):
         """Gentrify the plot."""
-        from matplotlib.ticker import MaxNLocator
         ax.set_aspect(1)
         ax.grid(ls=':', color='k', alpha=0.1, lw=0.5)
         ax.tick_params(which='both', right=True, top=True)
