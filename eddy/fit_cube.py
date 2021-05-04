@@ -22,7 +22,8 @@ from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 import corner
 from matplotlib.patches import Ellipse
 from matplotlib.ticker import MaxNLocator
-
+from . import deprojection as dp
+from . import models as mod
 
 warnings.filterwarnings("ignore")
 
@@ -65,7 +66,10 @@ class rotationmap:
         self.path = path
         self.data = np.squeeze(fits.getdata(path))
         self.header = fits.getheader(path)
-        if uncertainty is not None:
+
+        if isinstance(uncertainty, np.float):
+            self.error = uncertainty * abs((self.data - np.nanmedian(self.data)))
+        elif uncertainty is not None:
             self.error = abs(np.squeeze(fits.getdata(uncertainty)))
         else:
             try:
@@ -319,7 +323,7 @@ class rotationmap:
         if type == 'flat':
             def prior(p):
                 if not min(args) <= p <= max(args):
-                    return -np.inf
+                   return -np.inf
                 return np.log(1.0 / (args[1] - args[0]))
         else:
             def prior(p):
@@ -438,24 +442,14 @@ class rotationmap:
         r_taper = np.inf if r_taper is None else r_taper
         q_taper = 1.0 if q_taper is None else q_taper
 
-        # Define the emission surface, z_func, and the warp function, w_func.
-
-        def z_func(r_in):
-            r = np.clip(r_in - r_cavity, a_min=0.0, a_max=None)
-            z = z0 * np.power(r, psi) * np.exp(-np.power(r / r_taper, q_taper))
-            return np.clip(z, a_min=0.0, a_max=None)
-
-        def w_func(r_in, t):
-            r = np.clip(r_in - r_cavity, a_min=0.0, a_max=None)
-            warp = np.radians(w_i) * np.exp(-0.5 * (r / w_r)**2)
-            return r * np.tan(warp * np.sin(t - np.radians(w_t)))
 
         # Calculate the pixel values.
 
         if self.shadowed:
-            coords = self._get_shadowed_coords(x0, y0, inc, PA, z_func, w_func)
+            coords = self.get_shadowed_coords(x0, y0, inc, PA, z_func, w_func)
         else:
-            coords = self._get_flared_coords(x0, y0, inc, PA, z_func, w_func)
+            coords = dp.get_flared_coords(x0, y0, self.xaxis, self.yaxis, inc, PA, z0,
+                                 r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, self.disk_coords_niter)
         if frame == 'cylindrical':
             return coords
         r, t, z = coords
@@ -570,8 +564,8 @@ class rotationmap:
         """Set the default priors."""
 
         # Basic Geometry.
-        self.set_prior('x0', [-0.5, 0.5], 'flat')
-        self.set_prior('y0', [-0.5, 0.5], 'flat')
+        self.set_prior('x0', [-2, 2], 'flat')
+        self.set_prior('y0', [-2, 2], 'flat')
         self.set_prior('inc', [-90.0, 90.0], 'flat')
         self.set_prior('PA', [-360.0, 360.0], 'flat')
         self.set_prior('mstar', [0.1, 5.0], 'flat')
@@ -693,9 +687,10 @@ class rotationmap:
         if not has_mstar and not has_vp_100:
             raise KeyError("Must provide either `'mstar'` or `'vp_100'`.")
         if has_mstar:
-            params['vfunc'] = self._proj_vkep
+            params['vfunc'] = 'proj_vkep' #mod.proj_vkep
         else:
-            params['vfunc'] = self._proj_vpow
+            params['vfunc'] = 'proj_vpow' # mod.proj_vpow
+
         params['vp_q'] = params.pop('vp_q', -0.5)
         params['vp_rtaper'] = params.pop('vp_rtaper', 1e10)
         params['vp_qtaper'] = params.pop('vp_qtaper', 1.0)
@@ -802,51 +797,38 @@ class rotationmap:
 
     # -- Deprojection Functions -- #
 
-    @staticmethod
-    def _rotate_coords(x, y, PA):
-        """Rotate (x, y) by PA [deg]."""
-        x_rot = y * np.cos(np.radians(PA)) + x * np.sin(np.radians(PA))
-        y_rot = x * np.cos(np.radians(PA)) - y * np.sin(np.radians(PA))
-        return x_rot, y_rot
+    def vphi(self, params):
+        """
+        Return a rotation profile in [m/s]. If ``mstar`` is set, assume a
+        Keplerian profile including corrections for non-zero emission heights.
+        Otherwise, assume a powerlaw profile. See the documents in
+        ``disk_coords`` for more details of the parameters.
 
-    @staticmethod
-    def _deproject_coords(x, y, inc):
-        """Deproject (x, y) by inc [deg]."""
-        return x, y / np.cos(np.radians(inc))
+        Args:
+            params (dict): Dictionary of parameters describing the model.
 
-    def _get_cart_sky_coords(self, x0, y0):
-        """Return cartesian sky coordinates in [arcsec, arcsec]."""
-        return np.meshgrid(self.xaxis - x0, self.yaxis - y0)
+        Returns:
+            vproj (ndarray): Projected Keplerian rotation at each pixel (m/s).
+        """
+        rvals, tvals, zvals = self.disk_coords(**params)
 
-    def _get_midplane_cart_coords(self, x0, y0, inc, PA):
-        """Return cartesian coordaintes of midplane in [arcsec, arcsec]."""
-        x_sky, y_sky = self._get_cart_sky_coords(x0, y0)
-        x_rot, y_rot = self._rotate_coords(x_sky, y_sky, PA)
-        return rotationmap._deproject_coords(x_rot, y_rot, inc)
+        if params['vfunc'] == 'proj_vkep':
+            v_phi = mod.proj_vkep(rvals, tvals, zvals, params['dist'], params['mstar'], params['inc'])
+        else:
+            # roj_vpow(rvals, tvals, zvals, dist, mstar, vp_q, vp_100, vp_qtaper, vp_rtaper):
+            v_phi = mod.proj_vpow(rvals, tvals, zvals, params['dist'], params['mstar'], params['inc'],
+                                params['vp_q'], params['vp_100'], params['vp_qtaper'], params['vp_rtaper'])
+        return v_phi + params['vlsr']
 
-    def _get_midplane_polar_coords(self, x0, y0, inc, PA):
-        """Return the polar coordinates of midplane in [arcsec, radians]."""
-        x_mid, y_mid = self._get_midplane_cart_coords(x0, y0, inc, PA)
-        return np.hypot(y_mid, x_mid), np.arctan2(y_mid, x_mid)
-
-    def _get_flared_coords(self, x0, y0, inc, PA, z_func, w_func):
-        """Return cyclindrical coords of surface in [arcsec, rad, arcsec]."""
-        x_mid, y_mid = self._get_midplane_cart_coords(x0, y0, inc, PA)
-        r_tmp, t_tmp = np.hypot(x_mid, y_mid), np.arctan2(y_mid, x_mid)
-        for _ in range(self.disk_coords_niter):
-            z_tmp = z_func(r_tmp) + w_func(r_tmp, t_tmp)
-            y_tmp = y_mid + z_tmp * np.tan(np.radians(inc))
-            r_tmp = np.hypot(y_tmp, x_mid)
-            t_tmp = np.arctan2(y_tmp, x_mid)
-        return r_tmp, t_tmp, z_func(r_tmp)
-
-    def _get_shadowed_coords(self, x0, y0, inc, PA, z_func, w_func):
+    def get_shadowed_coords(self, x0, y0, inc, PA, z_func, w_func):
         """Return cyclindrical coords of surface in [arcsec, rad, arcsec]."""
 
         # Make the disk-frame coordinates.
         extend = self.shadowed_extend
         oversample = self.shadowed_oversample
-        diskframe_coords = self._get_diskframe_coords(extend, oversample)
+        diskframe_coords = dp.get_diskframe_coords(self.xaxis, self.yaxis,
+                    self.nxpix, self.nypix, extend=extend, oversample=oversample)
+
         xdisk, ydisk, rdisk, tdisk = diskframe_coords
         zdisk = z_func(rdisk) + w_func(rdisk, tdisk)
 
@@ -862,7 +844,7 @@ class rotationmap:
             y_dep = np.minimum.accumulate(y_dep[::-1], axis=0)[::-1]
 
         # Rotate and the disk.
-        x_rot, y_rot = self._rotate_coords(x_dep, y_dep, PA)
+        x_rot, y_rot = dp.rotate_coords(x_dep, y_dep, PA)
         x_rot, y_rot = x_rot + x0, y_rot + y0
 
         # Grid the disk.
@@ -874,64 +856,11 @@ class rotationmap:
                          method=self.shadowed_method)
         return r_obs, t_obs, z_func(r_obs)
 
-    def _get_diskframe_coords(self, extend=2.0, oversample=0.5):
-        """Disk-frame coordinates based on the cube axes."""
-        x_disk = np.linspace(extend * self.xaxis[0], extend * self.xaxis[-1],
-                             int(self.nxpix * oversample))[::-1]
-        y_disk = np.linspace(extend * self.yaxis[0], extend * self.yaxis[-1],
-                             int(self.nypix * oversample))
-        x_disk, y_disk = np.meshgrid(x_disk, y_disk)
-        r_disk = np.hypot(x_disk, y_disk)
-        t_disk = np.arctan2(y_disk, x_disk)
-        return x_disk, y_disk, r_disk, t_disk
-
     # -- Functions to build projected velocity profiles. -- #
-
-    def _vphi(self, params):
-        """
-        Return a rotation profile in [m/s]. If ``mstar`` is set, assume a
-        Keplerian profile including corrections for non-zero emission heights.
-        Otherwise, assume a powerlaw profile. See the documents in
-        ``disk_coords`` for more details of the parameters.
-
-        Args:
-            params (dict): Dictionary of parameters describing the model.
-
-        Returns:
-            vproj (ndarray): Projected Keplerian rotation at each pixel (m/s).
-        """
-        rvals, tvals, zvals = self.disk_coords(**params)
-        v_phi = params['vfunc'](rvals, tvals, zvals, params)
-        return v_phi + params['vlsr']
-
-    def _proj_vkep(self, rvals, tvals, zvals, params):
-        """Projected Keplerian rotational velocity profile."""
-        rvals *= sc.au * params['dist']
-        zvals *= sc.au * params['dist']
-        v_phi = sc.G * params['mstar'] * self.msun * np.power(rvals, 2)
-        v_phi = np.sqrt(v_phi * np.power(np.hypot(rvals, zvals), -3))
-        return self._proj_vphi(v_phi, tvals, params)
-
-    def _proj_vpow(self, rvals, tvals, zvals, params):
-        """Projected power-law rotational velocity profile."""
-        v_phi = (rvals * params['dist'] / 100.)**params['vp_q']
-        v_phi *= np.exp(-(rvals / params['vp_rtaper'])**params['vp_qtaper'])
-        v_phi = self._proj_vphi(params['vp_100'] * v_phi, tvals, params)
-        v_rad = (rvals * params['dist'] / 100.)**params['vr_q']
-        v_rad = self._proj_vrad(params['vr_100'] * v_rad, tvals, params)
-        return v_phi + v_rad
-
-    def _proj_vphi(self, v_phi, tvals, params):
-        """Project the rotational velocity."""
-        return v_phi * np.cos(tvals) * abs(np.sin(np.radians(params['inc'])))
-
-    def _proj_vrad(self, v_rad, tvals, params):
-        """Project the radial velocity."""
-        return v_rad * np.sin(tvals) * abs(np.sin(np.radians(params['inc'])))
 
     def _make_model(self, params):
         """Build the velocity model from the dictionary of parameters."""
-        v_phi = self._vphi(params)
+        v_phi = self.vphi(params)
         if params['beam']:
             v_phi = rotationmap._convolve_image(v_phi, self._beamkernel())
         return v_phi
