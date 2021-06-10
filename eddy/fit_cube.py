@@ -309,8 +309,11 @@ class rotationmap:
             to_return += [sampler.lnprobability[nburnin:]]
         if 'percentiles' in returns:
             to_return += [np.percentile(samples, [16, 50, 84], axis=0)]
-        if 'dict' in returns:
+        if 'medians' in returns:
             to_return += [medians]
+        if 'maxl' in returns:
+            to_return += [max_likelihood]
+            
         self.shadowed = False
         return to_return if len(to_return) > 1 else to_return[0]
 
