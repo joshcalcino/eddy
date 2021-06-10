@@ -13,11 +13,9 @@ from . import models
 from scipy.optimize import minimize
 from scipy.interpolate import griddata
 import scipy.constants as sc
-from scipy.ndimage import shift
-from scipy.ndimage import rotate
+from scipy.ndimage import shift, rotate
 import matplotlib.colors as mcolors
 import matplotlib.cm as cm
-# Import matplotlib.
 from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 import corner
 from matplotlib.patches import Ellipse
@@ -271,6 +269,12 @@ class rotationmap:
             medians = rotationmap._populate_dictionary(p0, params)
             medians = self.verify_params_dictionary(medians)
 
+            # Get the max likelihood model
+            idx = np.argmin(np.concatenate(sampler.lnprobability.T))
+            p0 = samples[nburnin:][idx]
+            max_likelihood = rotationmap._populate_dictionary(p0, params)
+            max_likelihood = self.verify_params_dictionary(max_likelihood)
+
         # Diagnostic plots.
         if plots is not None:
             plots = np.atleast_1d(plots)
@@ -284,12 +288,16 @@ class rotationmap:
                 self.plot_data(ivar=self.ivar, save_name=save_name)
             if 'walkers' in plots:
                 rotationmap._plot_walkers(sampler.chain.T, nburnin, labels, save_name=save_name)
+            if 'lnprob' in plots:
+                rotationmap._plot_walkers(np.expand_dims(sampler.lnprobability.T, 0), nburnin, ['lnprob'], histogram=False, save_name=save_name)
             if 'corner' in plots:
                 rotationmap._plot_corner(samples, labels, save_name=save_name)
             if 'bestfit' in plots:
                 self._plot_bestfit(medians, ivar=self.ivar, save_name=save_name)
             if 'residual' in plots:
                 self._plot_residual(medians, ivar=self.ivar, save_name=save_name)
+            if 'residual' in plots:
+                self._plot_residual(max_likelihood, ivar=self.ivar, save_name=save_name+'ml_')
 
         # Generate the output.
         if returns is None:
@@ -549,7 +557,7 @@ class rotationmap:
         """Log-likelihood function. Simple chi-squared likelihood."""
         model = self._make_model(params) * 1e-3
         lnx2 = np.where(self.mask, np.power((self.data - model), 2), 0.0)
-        lnx2 = -0.5 * np.sum(lnx2 * self.ivar)
+        lnx2 = -0.5 * np.sum(lnx2) # * self.ivar)
         return lnx2 if np.isfinite(lnx2) else -np.inf
 
     def _ln_probability(self, theta, *params_in):
@@ -733,6 +741,29 @@ class rotationmap:
         params['beam'] = bool(params.pop('beam', False))
 
         return params
+
+    def evaluate_model(self, params, coord_only=False):
+        """
+        Compute a model given a params dictionary.
+
+        Args:
+            params (dict): The parameter dictionary passed to ``fit_map``.
+            coords_only (Optional[bool]): Return the deprojected coordinates
+                rather than the v0 model. Default is False.
+
+        Returns:
+            model (ndarray): The sampled model, either the v0 model, or, if
+                ``coords_only`` is True, the deprojected cylindrical
+                coordinates, (r, t, z).
+        """
+
+        verified_params = self.verify_params_dictionary(params.copy())
+        if coords_only:
+            model = self.disk_coords(**verified_params)
+        else:
+            model = self._make_model(verified_params)
+
+        return model
 
     def evaluate_models(self, samples, params, draws=0.5,
                         collapse_func=np.mean, coords_only=False):
@@ -1434,7 +1465,8 @@ class rotationmap:
     @staticmethod
     def _plot_walkers(samples, nburnin=None, labels=None, histogram=True, save_name=None):
         """Plot the walkers to check if they are burning in."""
-
+        if labels[0] == 'lnprob':
+            samples = np.abs(samples)
         # Check the length of the label list.
         if labels is None:
             if samples.shape[0] != len(labels):
@@ -1444,7 +1476,11 @@ class rotationmap:
         for s, sample in enumerate(samples):
             fig, ax = plt.subplots()
             for walker in sample.T:
-                ax.plot(walker, alpha=0.1, color='k')
+                if labels[s] == 'lnprob':
+                    ax.semilogy(walker, alpha=0.1, color='k')
+                    ax.set_ylim([np.min(sample)*0.9, np.max(sample)*1.1])
+                else:
+                    ax.plot(walker, alpha=0.1, color='k')
             ax.set_xlabel('Steps')
             if labels is not None:
                 ax.set_ylabel(labels[s])
@@ -1463,6 +1499,9 @@ class rotationmap:
                 ax1 = ax_divider.append_axes("right", size="35%", pad="2%")
                 ax1.fill_betweenx(bins, hist, np.zeros(bins.size), step='mid',
                                   color='darkgray', lw=0.0)
+                if labels[s] == 'lnprob':
+                    ax1.set_yscale('log')
+
                 ax1.set_ylim(ax.get_ylim()[0], ax.get_ylim()[1])
                 ax1.set_xlim(0, ax1.get_xlim()[1])
                 ax1.set_yticklabels([])

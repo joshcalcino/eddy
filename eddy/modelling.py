@@ -1,6 +1,8 @@
 """Functions to easily build example spectra to test the approach."""
 
 import numpy as np
+import scipy.constants as sc
+from scipy.interpolate import griddata
 from eddy.fit_annulus import annulus as annulus_class
 
 
@@ -129,7 +131,6 @@ def flared_disk_ensemble(radius=1.0, inc=30., mstar=1.0, dist=100., Tb=40.,
 
     """
 
-    from scipy.interpolate import griddata
 
     # Check the inclination.
     if inc <= 0.0:
@@ -244,7 +245,6 @@ def _disk_to_sky(xdisk, ydisk, zdisk, inc):
 
 def _keplerian_velocity(rdisk, zdisk, tdisk, inc, dist, mstar):
     """Projected Keplerian velocity in [m/s]."""
-    import scipy.constants as sc
     vkep = sc.G * mstar * 1.988e30 * np.power(rdisk * dist * sc.au, 2.0)
     vkep /= np.power(np.hypot(rdisk, zdisk) * dist * sc.au, 3.0)
     return np.sqrt(vkep) * np.sin(np.radians(inc)) * np.cos(tdisk)
