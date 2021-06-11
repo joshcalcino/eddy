@@ -564,7 +564,7 @@ class rotationmap:
         lnx2 = np.where(self.mask, np.power((self.data - model), 2), 0.0)
         print('lnx2',lnx2)
         print('sum(lnx2)', np.sum(lnx2))
-        lnx2 = -0.5 * np.sum(lnx2) # * self.ivar)
+        lnx2 = -0.5 * np.nansum(lnx2) # * self.ivar)
         return lnx2 if np.isfinite(lnx2) else -np.inf
 
     def _ln_probability(self, theta, *params_in):
@@ -614,6 +614,8 @@ class rotationmap:
         for key in params.keys():
             if key in rotationmap.priors.keys():
                 lnp += rotationmap.priors[key](params[key])
+                print('key', key)
+                print('lnp', lnp)
                 if not np.isfinite(lnp):
                     return lnp
         return lnp
