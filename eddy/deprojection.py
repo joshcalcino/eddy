@@ -52,7 +52,7 @@ def w_func2(r_in, t, r_cavity, w_r, w_i, w_t):
     return r * np.tan(warp * np.sin(t - np.radians(w_t)))
 
 
-# @numba.njit
+@numba.njit
 def _get_flared_coords(x_mid, y_mid, inc, z0,
                     r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter):
     r_tmp, t_tmp = np.hypot(x_mid, y_mid), np.arctan2(y_mid, x_mid)
@@ -61,26 +61,34 @@ def _get_flared_coords(x_mid, y_mid, inc, z0,
     for _ in range(niter):
         z_tmp = z_func(r_tmp, z0, r_cavity, r_taper, psi, q_taper) +\
          w_func(r_tmp, t_tmp, r_cavity, w_r, w_i, w_t)
+        print('z_tmp dtype', z_tmp.dtype)
         # print('params', z0, r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t)
         # print('sum(z_func)', z_func(r_tmp, z0, r_cavity, r_taper, psi, q_taper))
         # print('sum(w_func)', w_func(r_tmp, t_tmp, r_cavity, w_r, w_i, w_t))
         y_tmp = y_mid + z_tmp * np.tan(np.radians(inc))
+        print('y_tmp dtype', y_tmp.dtype)
         r_tmp = np.hypot(y_tmp, x_mid)
+        print('r_tmp dtype', r_tmp.dtype)
         t_tmp = np.arctan2(y_tmp, x_mid)
+        print('t_tmp dtype', t_tmp.dtype)
     return r_tmp, t_tmp, z_func(r_tmp, z0, r_cavity, r_taper, psi, q_taper)
 
 
-# @numba.njit
+@numba.njit
 def z_func(r_in, z0, r_cavity, r_taper, psi, q_taper):
     r = np.maximum(r_in - r_cavity, 0.0)
+    print('r dtype', r.dtype)
     z = z0 * np.power(r, psi) * np.exp(-np.power(r / r_taper, q_taper))
+    print('z dtype', z.dtype)
     return np.maximum(z, 0.0)
 
 
-# @numba.njit
+@numba.njit
 def w_func(r_in, t, r_cavity, w_r, w_i, w_t):
     r = np.maximum(r_in - r_cavity, 0.0)
+    print('wr dtype', r.dtype)
     warp = np.radians(w_i) * np.exp(-0.5 * (r / w_r)**2)
+    print('waro dtype', warp.dtype)
     return r * np.tan(warp * np.sin(t - np.radians(w_t)))
 
 
