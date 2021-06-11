@@ -80,6 +80,8 @@ class rotationmap:
                 print("Change this at any time with rotationmap.error.")
                 self.error = 0.1 * abs((self.data - np.nanmedian(self.data)))
         self.error = np.where(np.isnan(self.error), 0.0, self.error)
+        print(self.error)
+        print(np.sum(self.error))
 
         # Convert the data to [km/s].
         if unit.lower() == 'm/s':
