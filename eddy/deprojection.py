@@ -7,6 +7,8 @@ def get_flared_coords(x0, y0, xaxis, yaxis, inc, PA, z0,
                     r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter):
     """Return cyclindrical coords of surface in [arcsec, rad, arcsec]."""
     x_mid, y_mid = get_midplane_cart_coords(x0, y0, inc, PA, xaxis, yaxis)
+    # print('sum(xmid)', np.sum(x_mid))
+    # print('sum(ymid)', np.sum(y_mid))
     return _get_flared_coords(x_mid, y_mid, inc, z0,
                         r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter)
 
@@ -15,6 +17,8 @@ def get_flared_coords(x0, y0, xaxis, yaxis, inc, PA, z0,
 def _get_flared_coords(x_mid, y_mid, inc, z0,
                     r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter):
     r_tmp, t_tmp = np.hypot(x_mid, y_mid), np.arctan2(y_mid, x_mid)
+    print('sum(r_tmp)', np.sum(r_tmp))
+    print('sum(t_tmp)', np.sum(t_tmp))
     for _ in range(niter):
         z_tmp = z_func(r_tmp, z0, r_cavity, r_taper, psi, q_taper) +\
          w_func(r_tmp, t_tmp, r_cavity, w_r, w_i, w_t)

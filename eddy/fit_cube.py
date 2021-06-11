@@ -855,8 +855,8 @@ class rotationmap:
         rvals, tvals, zvals = self.disk_coords(**params)
 
         if params['vfunc'] == 'proj_vkep':
-            print(rvals, tvals, zvals, params['dist'], params['mstar'], params['inc'])
-            print(np.sum(rvals), np.sum(tvals), np.sum(zvals))
+            # print(rvals, tvals, zvals, params['dist'], params['mstar'], params['inc'])
+            # print(np.sum(rvals), np.sum(tvals), np.sum(zvals))
             v_phi = mod.proj_vkep(rvals, tvals, zvals, params['dist'], params['mstar'], params['inc'])
         else:
             # roj_vpow(rvals, tvals, zvals, dist, mstar, vp_q, vp_100, vp_qtaper, vp_rtaper):
