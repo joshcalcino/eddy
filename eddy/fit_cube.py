@@ -80,8 +80,8 @@ class rotationmap:
                 print("Change this at any time with rotationmap.error.")
                 self.error = 0.1 * abs((self.data - np.nanmedian(self.data)))
         self.error = np.where(np.isnan(self.error), 0.0, self.error)
-        print(self.error)
-        print(np.sum(self.error))
+        # print(self.error)
+        # print(np.sum(self.error))
 
         # Convert the data to [km/s].
         if unit.lower() == 'm/s':
@@ -562,6 +562,8 @@ class rotationmap:
         """Log-likelihood function. Simple chi-squared likelihood."""
         model = self._make_model(params) * 1e-3
         lnx2 = np.where(self.mask, np.power((self.data - model), 2), 0.0)
+        print('lnx2',lnx2)
+        print('sum(lnx2)', np.sum(lnx2))
         lnx2 = -0.5 * np.sum(lnx2) # * self.ivar)
         return lnx2 if np.isfinite(lnx2) else -np.inf
 
@@ -569,6 +571,7 @@ class rotationmap:
         """Log-probablility function."""
         model = rotationmap._populate_dictionary(theta, params_in[0])
         lnp = self._ln_prior(model)
+        print('lnp', lnp)
         if np.isfinite(lnp):
             return lnp + self._ln_likelihood(model)
         return -np.inf
