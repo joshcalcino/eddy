@@ -12,7 +12,7 @@ def get_flared_coords(x0, y0, xaxis, yaxis, inc, PA, z0,
                         r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter)
 
 
-@numba.njit
+# @numba.njit
 def _get_flared_coords(x_mid, y_mid, inc, z0,
                     r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter):
     r_tmp, t_tmp = np.hypot(x_mid, y_mid), np.arctan2(y_mid, x_mid)
