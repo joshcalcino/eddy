@@ -2,7 +2,6 @@ import numpy as np
 import numba
 
 
-
 def get_flared_coords(x0, y0, xaxis, yaxis, inc, PA, z0,
                     r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter):
     """Return cyclindrical coords of surface in [arcsec, rad, arcsec]."""
@@ -22,7 +21,7 @@ def _get_flared_coords(x_mid, y_mid, inc, z0,
     for _ in range(niter):
         z_tmp = z_func(r_tmp, z0, r_cavity, r_taper, psi, q_taper) +\
          w_func(r_tmp, t_tmp, r_cavity, w_r, w_i, w_t)
-        print('params', z0, r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t)
+        # print('params', z0, r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t)
         print('sum(z_func)', z_func(r_tmp, z0, r_cavity, r_taper, psi, q_taper))
         print('sum(w_func)', w_func(r_tmp, t_tmp, r_cavity, w_r, w_i, w_t))
         y_tmp = y_mid + z_tmp * np.tan(np.radians(inc))
@@ -31,14 +30,14 @@ def _get_flared_coords(x_mid, y_mid, inc, z0,
     return r_tmp, t_tmp, z_func(r_tmp, z0, r_cavity, r_taper, psi, q_taper)
 
 
-@numba.njit
+# @numba.njit
 def z_func(r_in, z0, r_cavity, r_taper, psi, q_taper):
     r = np.maximum(r_in - r_cavity, 0.0)
     z = z0 * np.power(r, psi) * np.exp(-np.power(r / r_taper, q_taper))
     return np.maximum(z, 0.0)
 
 
-@numba.njit
+# @numba.njit
 def w_func(r_in, t, r_cavity, w_r, w_i, w_t):
     r = np.maximum(r_in - r_cavity, 0.0)
     warp = np.radians(w_i) * np.exp(-0.5 * (r / w_r)**2)
