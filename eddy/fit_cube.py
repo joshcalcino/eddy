@@ -561,6 +561,7 @@ class rotationmap:
     def _ln_likelihood(self, params):
         """Log-likelihood function. Simple chi-squared likelihood."""
         model = self._make_model(params) * 1e-3
+        print('model sum', np.sum(model))
         lnx2 = np.where(self.mask, np.power((self.data - model), 2), 0.0)
         # print('lnx2',lnx2)
         # print('sum(lnx2)', np.sum(lnx2))
