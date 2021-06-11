@@ -270,8 +270,8 @@ class rotationmap:
             medians = self.verify_params_dictionary(medians)
 
             # Get the max likelihood model
-            idx = np.argmin(np.concatenate(sampler.lnprobability.T))
-            p0 = samples[nburnin:][idx]
+            idx = np.argmin(np.concatenate(sampler.lnprobability.T[nburnin:]))
+            p0 = samples[idx]
             max_likelihood = rotationmap._populate_dictionary(p0, params)
             max_likelihood = self.verify_params_dictionary(max_likelihood)
 
