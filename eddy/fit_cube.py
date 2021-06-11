@@ -310,10 +310,10 @@ class rotationmap:
         if 'percentiles' in returns:
             to_return += [np.percentile(samples, [16, 50, 84], axis=0)]
         if 'medians' in returns:
-            to_return += [medians]
+            to_return.append(medians)
         if 'maxl' in returns:
-            to_return += [max_likelihood]
-            
+            to_return.append(max_likelihood)
+
         self.shadowed = False
         return to_return if len(to_return) > 1 else to_return[0]
 
