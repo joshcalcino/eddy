@@ -1481,7 +1481,7 @@ class rotationmap:
             for walker in sample.T:
                 if labels[s] == 'lnprob':
                     ax.semilogy(walker, alpha=0.1, color='k')
-                    ax.set_ylim([np.min(sample[~np.isnan(x)])*0.9, np.max(sample[~np.isnan(x)])*1.1])
+                    ax.set_ylim([np.min(sample[~np.isnan(sample)])*0.9, np.max(sample[~np.isnan(sample)])*1.1])
                 else:
                     ax.plot(walker, alpha=0.1, color='k')
             ax.set_xlabel('Steps')
