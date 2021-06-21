@@ -615,7 +615,7 @@ class rotationmap:
         for key in params.keys():
             if key in rotationmap.priors.keys():
                 lnp += rotationmap.priors[key](params[key])
-                # print('key', key)
+                # print('key', key, params[key])
                 # print('lnp', lnp)
                 if not np.isfinite(lnp):
                     return lnp
