@@ -2,6 +2,7 @@
 
 import os
 import time
+import zeus
 import emcee
 import numpy as np
 from astropy.io import fits
@@ -51,6 +52,7 @@ class rotationmap:
         y0 (optional[float]): Recenter the image to this offset.
         unit (optional[str]): Unit of the input data cube. By deafult
             assumed to be [m/s].
+        mcmc (optional[str]): Which MCMC package to use to sample posteriors.
     """
 
     msun = 1.988e30
@@ -59,7 +61,7 @@ class rotationmap:
     priors = {}
 
     def __init__(self, path, uncertainty=None, FOV=None, downsample=None,
-                 x0=0.0, y0=0.0, unit='m/s', clip=None):
+                 x0=0.0, y0=0.0, unit='m/s', mcmc='emcee'):
         # Read in the data and position axes.
         self.path = path
         self.data = np.squeeze(fits.getdata(path))
@@ -108,9 +110,6 @@ class rotationmap:
                 downsample = int(np.ceil(self.bmaj / self.dpix))
             self._downsample_cube(downsample)
             self.dpix = abs(np.diff(self.xaxis)).mean()
-        if clip is not None:
-            print("WARNING: `clip` is being depreciate. Use `FOV` instead.")
-            FOV = 2.0 * clip
         if FOV is not None:
             self._clip_cube(FOV / 2.0)
         self.nypix = self.yaxis.size
@@ -132,6 +131,7 @@ class rotationmap:
         # Get the name of the file
         basename = os.path.basename(self.path)
         self.name = os.path.splitext(basename)[0]
+        self._mcmc = 'emcee'
 
     def fit_map(self, p0, params, r_min=None, r_max=None, optimize=True,
                 nwalkers=None, nburnin=300, nsteps=100, scatter=1e-3,
@@ -192,8 +192,9 @@ class rotationmap:
                 ``'bestfit'``, ``'residual'``, or ``'none'`` if no plots are to
                 be plotted. By default, all are plotted.
             returns (optional[list]): List of items to return. Can contain
-                ``'samples'``, ``'percentiles'``, ``'dict'``. By
-                default only ``'percentiles'`` are returned.
+                ``'samples'``, ``'sampler'``, ``'percentiles'``, ``'dict'``,
+                ``'model'``, ``'residuals'`` or ``'none'``. By default only
+                ``'percentiles'`` are returned.
             pool (optional): An object with a `map` method.
             emcee_kwargs (Optional[dict]): Dictionary to pass to the emcee
                 ``EnsembleSampler``.
@@ -213,6 +214,7 @@ class rotationmap:
         """
 
         # Check the dictionary. May need some more work.
+
         if r_min is not None:
             if 'r_min' in params.keys():
                 print("Found `r_min` in `params`. Overwriting value.")
@@ -221,16 +223,19 @@ class rotationmap:
             if 'r_max' in params.keys():
                 print("Found `r_max` in `params`. Overwriting value.")
             params['r_max'] = r_max
-        params = self.verify_params_dictionary(params)
+
+        params_tmp = self.verify_params_dictionary(params.copy())
         self.shadowed = shadowed
 
         # Generate the mask for fitting based on the params.
+
         p0 = np.squeeze(p0).astype(float)
-        temp = rotationmap._populate_dictionary(p0, params)
+        temp = rotationmap._populate_dictionary(p0, params_tmp)
         self.ivar = self._calc_ivar(temp)
 
         # Check what the parameters are.
-        labels = rotationmap._get_labels(params)
+
+        labels = rotationmap._get_labels(params_tmp)
         labels_raw = []
         for label in labels:
             label_raw = label.replace('$', '').replace('{', '')
@@ -242,33 +247,40 @@ class rotationmap:
 
         # Run an initial optimization using scipy.minimize. Recalculate the
         # inverse variance mask.
+
         if optimize:
-            p0 = self._optimize_p0(p0, params)
-
-        # Make the mask for fitting.
-        temp = rotationmap._populate_dictionary(p0, params)
-        temp = self.verify_params_dictionary(temp)
-
-        self.ivar = self._calc_ivar(temp)
+            p0 = self._optimize_p0(p0, params_tmp)
 
         # Set up and run the MCMC with emcee.
+        time.sleep(0.5)
         nwalkers = 2 * p0.size if nwalkers is None else nwalkers
         emcee_kwargs = {} if emcee_kwargs is None else emcee_kwargs
         emcee_kwargs['scatter'], emcee_kwargs['pool'] = scatter, pool
         for n in range(int(niter)):
 
+            # Make the mask for fitting.
+
+            temp = rotationmap._populate_dictionary(p0, params_tmp)
+            temp = self.verify_params_dictionary(temp)
+            self.ivar = self._calc_ivar(temp)
+
             # Run the sampler.
-            sampler = self._run_mcmc(p0=p0, params=params, nwalkers=nwalkers,
-                                     nburnin=nburnin, nsteps=nsteps,
-                                     **emcee_kwargs)
-            if type(params['PA']) is int:
-                sampler.chain[:, :, params['PA']] %= 360.0
+
+            sampler = self._run_mcmc(p0=p0, params=params_tmp,
+                                     nwalkers=nwalkers, nburnin=nburnin,
+                                     nsteps=nsteps, **emcee_kwargs)
+            if type(params_tmp['PA']) is int:
+                sampler.chain[:, :, params_tmp['PA']] %= 360.0
 
             # Split off the samples.
-            samples = sampler.chain[:, -int(nsteps):]
+
+            if self._mcmc == 'emcee':
+                samples = sampler.chain[:, -int(nsteps):]
+            else:
+                samples = sampler.chain[-int(nsteps):]
             samples = samples.reshape(-1, samples.shape[-1])
             p0 = np.median(samples, axis=0)
-            medians = rotationmap._populate_dictionary(p0, params)
+            medians = rotationmap._populate_dictionary(p0, params.copy())
             medians = self.verify_params_dictionary(medians)
 
             # Get the max likelihood model
@@ -279,6 +291,8 @@ class rotationmap:
 
         # Diagnostic plots.
         if plots is not None:
+            if plots is None:
+                plots = ['mask', 'walkers', 'corner', 'bestfit', 'residual']
             plots = np.atleast_1d(plots)
 
             if savefigs is not None:
@@ -289,7 +303,11 @@ class rotationmap:
             if 'mask' in plots:
                 self.plot_data(ivar=self.ivar, save_name=save_name)
             if 'walkers' in plots:
-                rotationmap._plot_walkers(sampler.chain.T, nburnin, labels, save_name=save_name)
+                if self._mcmc == 'emcee':
+                    walkers = sampler.chain.T
+                else:
+                    walkers = np.rollaxis(sampler.chain.copy(), 2)
+                rotationmap._plot_walkers(walkers, nburnin, labels, save_name=save_name)
             if 'lnprob' in plots:
                 rotationmap._plot_walkers(np.expand_dims(sampler.lnprobability.T, 0), nburnin, ['lnprob'], histogram=False, save_name=save_name)
             if 'corner' in plots:
@@ -302,19 +320,37 @@ class rotationmap:
                 self._plot_residual(max_likelihood, ivar=self.ivar, save_name=save_name+'ml_')
 
         # Generate the output.
-        if returns is None:
-            return None
+
         to_return = []
+
+        if returns is None:
+            returns = ['percentiles']
+            returns = np.atleast_1d(returns)
+            return returns
+
+        if 'none' in returns:
+            return None
         if 'samples' in returns:
             to_return += [samples]
+        if 'sampler' in returns:
+            to_return += [sampler]
         if 'lnprob' in returns:
             to_return += [sampler.lnprobability[nburnin:]]
         if 'percentiles' in returns:
             to_return += [np.percentile(samples, [16, 50, 84], axis=0)]
+
         if 'medians' in returns:
             to_return.append(medians)
         if 'maxl' in returns:
             to_return.append(max_likelihood)
+        if 'dict' in returns:
+            to_return += [medians]
+        if 'model' in returns or 'residual' in returns:
+            model = self.evaluate_models(samples, params)
+            if 'model' in returns:
+                to_return += [model]
+            if 'residual' in returns:
+                to_return += [self.data * 1e3 - model]
 
         self.shadowed = False
         return to_return if len(to_return) > 1 else to_return[0]
@@ -479,7 +515,11 @@ class rotationmap:
                 draw a solid contour around the regions with finite ``ivar``
                 values and fill regions not considered.
             return_fig (optional[bool]): Return the figure.
+<<<<<<< HEAD
             save_name (optional[string]): Name of the figure.
+=======
+
+>>>>>>> upstream/master
         Returns:
             fig (Matplotlib figure): If ``return_fig`` is ``True``. Can access
                 the axes through ``fig.axes`` for additional plotting.
@@ -538,16 +578,27 @@ class rotationmap:
 
     def _run_mcmc(self, p0, params, nwalkers, nburnin, nsteps, **kwargs):
         """Run the MCMC sampling. Returns the sampler."""
-        p0 = self._random_p0(p0, kwargs.pop('scatter', 1e-3), nwalkers)
-        sampler = emcee.EnsembleSampler(nwalkers, p0.shape[1],
-                                        self._ln_probability,
-                                        args=[params, np.nan],
-                                        **kwargs)
-        if emcee.__version__ >= '3':
-            progress = kwargs.pop('progress', True)
-            sampler.run_mcmc(p0, nburnin + nsteps, progress=progress)
+
+        if self._mcmc == 'zeus':
+            EnsembleSampler = zeus.EnsembleSampler
         else:
-            sampler.run_mcmc(p0, nburnin + nsteps)
+            EnsembleSampler = emcee.EnsembleSampler
+
+        p0 = self._random_p0(p0, kwargs.pop('scatter', 1e-3), nwalkers)
+        moves = kwargs.pop('moves', None)
+        pool = kwargs.pop('pool', None)
+
+        sampler = EnsembleSampler(nwalkers,
+                                  p0.shape[1],
+                                  self._ln_probability,
+                                  args=[params, np.nan],
+                                  moves=moves,
+                                  pool=pool)
+
+        progress = kwargs.pop('progress', True)
+
+        sampler.run_mcmc(p0, nburnin + nsteps, progress=progress, **kwargs)
+
         return sampler
 
     @staticmethod
@@ -815,7 +866,8 @@ class rotationmap:
         verified_params = self.verify_params_dictionary(params.copy())
 
         # Avearge over a random draw of models.
-        if isinstance(draws, int):
+
+        if isinstance(int(draws) if draws > 1.0 else draws, int):
             models = []
             for idx in np.random.randint(0, samples.shape[0], draws):
                 tmp = self._populate_dictionary(samples[idx], verified_params)
@@ -826,6 +878,7 @@ class rotationmap:
             return collapse_func(models, axis=0)
 
         # Take a percentile of the samples.
+
         elif isinstance(draws, float):
             tmp = np.percentile(samples, draws, axis=0)
             tmp = self._populate_dictionary(tmp, verified_params)
@@ -836,6 +889,91 @@ class rotationmap:
 
         else:
             raise ValueError("'draws' must be a float or integer.")
+
+    def mirror_residual(self, samples, params, mirror_velocity_residual=True,
+                        mirror_axis='minor', return_deprojected=False,
+                        deprojected_dpix_scale=1.0):
+        """
+        Return the residuals after subtracting a mirror image of either the
+        rotation map, as in _Huang et al. 2018, or the residuals, as in
+        _Izquierdo et al. 2021.
+
+        .. _Huang et al. 2018: https://ui.adsabs.harvard.edu/abs/2018ApJ...867....3H/abstract
+        .. _Izquierdo et al. 2021: https://ui.adsabs.harvard.edu/abs/2021arXiv210409530V/abstract
+
+        Args:
+            samples (ndarray): An array of samples returned from ``fit_map``.
+            params (dict): The parameter dictionary passed to ``fit_map``.
+            mirror_velocity_residual (Optional[bool]): If ``True``, the
+                default, mirror the velocity residuals, otherwise use the line
+                of sight velocity corrected for the systemic velocity.
+            mirror_axis (Optional[str]): Which axis to mirror the image along,
+                either ``'minor'`` or ``'major'``.
+            return_deprojected (Optional[bool]): If ``True``, return the
+                deprojected image, or, if ``False``, reproject the data onto
+                the sky.
+
+        Returns:
+            x, y, residual (array, array, array): The x- and y-axes of the
+                residual (either the sky axes or deprojected, depending on the
+                chosen arguments) and the residual.
+        """
+
+        # Calculate the image to mirror.
+
+        if mirror_velocity_residual:
+            to_mirror = self.data * 1e3 - self.evaluate_models(samples, params)
+        else:
+            to_mirror = self.data.copy() * 1e3
+            if isinstance(type(params['vlsr']), int):
+                to_mirror -= params['vlsr']
+            else:
+                to_mirror -= np.median(samples, axis=0)[params['vlsr']]
+
+        # Generate the axes for the deprojected image.
+
+        r, t, _ = self.evaluate_models(samples, params, coords_only=True)
+        t += np.pi / 2.0 if mirror_axis.lower() == 'minor' else 0.0
+        x = np.nanmax(np.where(np.isfinite(to_mirror), r, np.nan))
+        x = np.arange(-x, x, deprojected_dpix_scale * self.dpix)
+        x -= 0.5 * (x[0] + x[-1])
+
+        xs = (r * np.cos(t)).flatten()
+        ys = (r * np.sin(t)).flatten()
+
+        # Deproject the image.
+
+        from scipy.interpolate import griddata
+        d = griddata((xs, ys), to_mirror.flatten(), (x[:, None], x[None, :]))
+
+        # Either subtract or add the mirrored image. Only want to add when
+        # mirroring the line-of-sight velocity and mirroring about the minor
+        # axis.
+
+        if not mirror_velocity_residual and mirror_axis == 'minor':
+            d += d[:, ::-1]
+        else:
+            d -= d[:, ::-1]
+
+        if return_deprojected:
+            return x, x, d
+
+        # Reproject the residuals onto the sky plane.
+
+        dd = d.flatten()
+        mask = np.isfinite(dd)
+        xx, yy = np.meshgrid(x, x)
+        xx, yy = xx.flatten(), yy.flatten()
+        xx, yy, dd = xx[mask], yy[mask], dd[mask]
+
+        from scipy.interpolate import interp2d
+
+        f = interp2d(xx, yy, dd, kind='linear')
+        f = np.squeeze([f(xd, yd) for xd, yd in zip(xs, ys)])
+        f = f.reshape(to_mirror.shape)
+        f = np.where(np.isfinite(to_mirror), f, np.nan)
+
+        return self.xaxis, self.yaxis, f
 
     # -- Deprojection Functions -- #
 
@@ -1216,6 +1354,51 @@ class rotationmap:
     @property
     def extent(self):
         return [self.xaxis[0], self.xaxis[-1], self.yaxis[0], self.yaxis[-1]]
+
+    def plot_model(self, model, levels=None, cb_label=None, return_fig=False,
+                   contourf_kwargs=None):
+        """
+        Plot a v0 model using the same scalings as the plot_data() function.
+
+        Args:
+            model (array): Model to plot in [km/s].
+            levels (optional[list]): List of contour levels to use. If none
+                provided, will default to the default of ``plot_data()``.
+            cb_label (optional[str]): Colorbar label.
+            return_fig (optional[bool]): Return the figure.
+            contourf_kwargs (optional[dict]): Dictionary of contourf kwargs.
+
+        Returns:
+            fig (Matplotlib figure): If ``return_fig`` is ``True``. Can access
+                the axes through ``fig.axes`` for additional plotting.
+        """
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots()
+
+        if levels is None:
+            levels = np.nanpercentile(self.data, [2, 98]) - self.vlsr
+            levels = max(abs(levels[0]), abs(levels[1]))
+            levels = self.vlsr + np.linspace(-levels, levels, 30)
+
+        contourf_kwargs = {} if contourf_kwargs is None else contourf_kwargs
+        contourf_kwargs['levels'] = levels
+        contourf_kwargs['extend'] = contourf_kwargs.pop('extend', 'both')
+        contourf_kwargs['zorder'] = contourf_kwargs.pop('zorder', -9)
+        contourf_kwargs['cmap'] = contourf_kwargs.pop('cmap',
+                                                      rotationmap.colormap())
+        im = ax.contourf(self.xaxis, self.yaxis, model, **contourf_kwargs)
+
+        if cb_label is None:
+            cb_label = r'${\rm v_{0} \quad (km\,s^{-1})}$'
+        if cb_label != '':
+            cb = plt.colorbar(im, pad=0.03, format='%.2f')
+            cb.set_label(cb_label, rotation=270, labelpad=15)
+            cb.minorticks_on()
+
+        self._gentrify_plot(ax)
+
+        if return_fig:
+            return fig
 
     def _plot_bestfit(self, params, ivar=None, residual=False,
                       return_ax=False, save_name=None):
