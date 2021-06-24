@@ -2,15 +2,14 @@
 
 import os
 import time
-import zeus
 import emcee
+import pickle
 import numpy as np
 from astropy.io import fits
 from astropy.convolution import (convolve, convolve_fft, Gaussian2DKernel, Gaussian1DKernel
 )
 import warnings
 import matplotlib.pyplot as plt
-from . import models
 from scipy.optimize import minimize
 from scipy.interpolate import griddata
 import scipy.constants as sc
@@ -23,6 +22,12 @@ from matplotlib.patches import Ellipse
 from matplotlib.ticker import MaxNLocator
 from . import deprojection as dp
 from . import models as mod
+
+try:
+    import zeus
+except ImportError:
+    no_zeus = True
+
 
 warnings.filterwarnings("ignore")
 
@@ -90,7 +95,7 @@ class rotationmap:
             self.data *= 1e-3
             self.error *= 1e-3
         elif unit.lower() != 'km/s':
-            raise ValueError("unit must me 'm/s' or 'km/s'.")
+            raise ValueError("unit must be 'm/s' or 'km/s'.")
 
         # Read the position axes.
         self.xaxis = self._read_position_axis(a=1)
@@ -136,7 +141,7 @@ class rotationmap:
     def fit_map(self, p0, params, r_min=None, r_max=None, optimize=True,
                 nwalkers=None, nburnin=300, nsteps=100, scatter=1e-3,
                 plots=['bestfit', 'residual'], returns=['percentiles'], pool=None, emcee_kwargs=None,
-                niter=1, shadowed=False, savefigs=False):
+                niter=1, shadowed=False, savefigs=False, savemodels=False):
         """
         Fit a rotation profile to the data. Note that for a disk with
         a non-zero height, the sign of the inclination dictates the direction
@@ -319,6 +324,32 @@ class rotationmap:
             if 'residual' in plots:
                 self._plot_residual(max_likelihood, ivar=self.ivar, save_name=save_name+'ml_')
 
+        if savemodels:
+            data = np.squeeze(fits.getdata(self.path))
+            medians_mod = medians.copy()
+
+            medians_mod['xaxis'] = self._read_position_axis(a=1)
+            medians_mod['yaxis'] = self._read_position_axis(a=2)
+
+            median_model = self.evaluate_model(medians_mod, coords_only=False)
+            median_model_hdu = fits.PrimaryHDU(median_model)
+
+            header = self.header
+            for param in medians:
+                header[param] = medians[param]
+
+            median_model_hdu.header = header
+            median_model_hdu.writeto('{}_median_fit.fits'.format(self.name), overwrite=True)
+
+            residuals = data - median_model
+            residuals_hdu = fits.PrimaryHDU(residuals)
+
+            residuals_hdu.header = header
+            residuals_hdu.writeto('{}_residuals_fit.fits'.format(self.name), overwrite=True)
+
+            # Save the params dictionary
+            pickle.dump(medians_mod, open("{}_median_fit_params.pkl".format(self.name), 'wb'))
+
         # Generate the output.
 
         to_return = []
@@ -380,7 +411,7 @@ class rotationmap:
                 return np.log(lnp / np.sqrt(2. * np.pi) / args[1])
         rotationmap.priors[param] = prior
 
-    def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=0.0,
+    def disk_coords(self, x0=0.0, y0=0.0, xaxis=None, yaxis=None, inc=0.0, PA=0.0, z0=0.0, psi=0.0,
                     r_cavity=0.0, r_taper=None, q_taper=None, w_i=0.0, w_r=1.0,
                     w_t=0.0, frame='cylindrical', **_):
         r"""
@@ -473,6 +504,12 @@ class rotationmap:
         if frame not in ['cylindrical', 'cartesian']:
             raise ValueError("frame must be 'cylindrical' or 'cartesian'.")
 
+        # Get the x and y-axis
+        if type(xaxis) == type(None):
+            xaxis = self.xaxis
+        if type(yaxis) == type(None):
+            yaxis = self.yaxis
+
         # Apply the inclination concention.
 
         inc = inc if inc < 90.0 else inc - 180.0
@@ -497,7 +534,7 @@ class rotationmap:
         if self.shadowed:
             coords = self.get_shadowed_coords(x0, y0, inc, PA, z_func, w_func)
         else:
-            coords = dp.get_flared_coords(x0, y0, self.xaxis, self.yaxis, inc, PA, z0,
+            coords = dp.get_flared_coords(x0, y0, xaxis, yaxis, inc, PA, z0,
                                  r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, self.disk_coords_niter)
         if frame == 'cylindrical':
             return coords
@@ -515,11 +552,7 @@ class rotationmap:
                 draw a solid contour around the regions with finite ``ivar``
                 values and fill regions not considered.
             return_fig (optional[bool]): Return the figure.
-<<<<<<< HEAD
             save_name (optional[string]): Name of the figure.
-=======
-
->>>>>>> upstream/master
         Returns:
             fig (Matplotlib figure): If ``return_fig`` is ``True``. Can access
                 the axes through ``fig.axes`` for additional plotting.
@@ -804,7 +837,7 @@ class rotationmap:
 
         return params
 
-    def evaluate_model(self, params, coord_only=False):
+    def evaluate_model(self, params, coords_only=False):
         """
         Compute a model given a params dictionary.
 
@@ -1043,7 +1076,6 @@ class rotationmap:
     def _make_model(self, params):
         """Build the velocity model from the dictionary of parameters."""
         v_phi = self.vphi(params)
-        # print('v_phi', v_phi)
         if params['beam']:
             v_phi = rotationmap._convolve_image(v_phi, self._beamkernel())
         return v_phi
