@@ -6,71 +6,19 @@ def get_flared_coords(x0, y0, xaxis, yaxis, inc, PA, z0,
                     r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter):
     """Return cyclindrical coords of surface in [arcsec, rad, arcsec]."""
     x_mid, y_mid = get_midplane_cart_coords(x0, y0, inc, PA, xaxis, yaxis)
-    # print('sum(xmid)', np.sum(x_mid))
-    # print('sum(ymid)', np.sum(y_mid))
-    # t1 = _get_flared_coords(x_mid, y_mid, inc, z0,
-    #                 r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter)
-    # t2 = _get_flared_coords2(x_mid, y_mid, inc, z0,
-    #                 r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter)
-    # print('t1',np.array(t1))
-    # print('t2',np.array(t2))
-    # print('t1-t2', np.array(t1)-np.array(t2))
-    # print(np.sum(np.array(t1)-np.array(t2)))
-
     return _get_flared_coords(x_mid, y_mid, inc, z0,
                         r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter)
-
-
-def _get_flared_coords2(x_mid, y_mid, inc, z0,
-                    r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter):
-    r_tmp, t_tmp = np.hypot(x_mid, y_mid), np.arctan2(y_mid, x_mid)
-    # print('sum(r_tmp)', np.sum(r_tmp))
-    # print('sum(t_tmp)', np.sum(t_tmp))
-    for _ in range(niter):
-        z_tmp = z_func2(r_tmp, z0, r_cavity, r_taper, psi, q_taper) +\
-         w_func2(r_tmp, t_tmp, r_cavity, w_r, w_i, w_t)
-        # print('params', z0, r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t)
-        # print('sum(z_func)', z_func2(r_tmp, z0, r_cavity, r_taper, psi, q_taper))
-        # print('sum(w_func)', w_func2(r_tmp, t_tmp, r_cavity, w_r, w_i, w_t))
-        y_tmp = y_mid + z_tmp * np.tan(np.radians(inc))
-        r_tmp = np.hypot(y_tmp, x_mid)
-        t_tmp = np.arctan2(y_tmp, x_mid)
-    return r_tmp, t_tmp, z_func2(r_tmp, z0, r_cavity, r_taper, psi, q_taper)
-
-
-# @numba.njit
-def z_func2(r_in, z0, r_cavity, r_taper, psi, q_taper):
-    r = np.maximum(r_in - r_cavity, 0.0)
-    z = z0 * np.power(r, psi) * np.exp(-np.power(r / r_taper, q_taper))
-    return np.maximum(z, 0.0)
-
-
-# @numba.njit
-def w_func2(r_in, t, r_cavity, w_r, w_i, w_t):
-    r = np.maximum(r_in - r_cavity, 0.0)
-    warp = np.radians(w_i) * np.exp(-0.5 * (r / w_r)**2)
-    return r * np.tan(warp * np.sin(t - np.radians(w_t)))
-
 
 # @numba.njit
 def _get_flared_coords(x_mid, y_mid, inc, z0,
                     r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, niter):
     r_tmp, t_tmp = np.hypot(x_mid, y_mid), np.arctan2(y_mid, x_mid)
-    # print('sum(r_tmp)', np.sum(r_tmp))
-    # print('sum(t_tmp)', np.sum(t_tmp))
     for _ in range(niter):
         z_tmp = z_func(r_tmp, z0, r_cavity, r_taper, psi, q_taper) +\
          w_func(r_tmp, t_tmp, r_cavity, w_r, w_i, w_t)
-        # print('z_tmp dtype', z_tmp.dtype)
-        # print('params', z0, r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t)
-        # print('sum(z_func)', z_func(r_tmp, z0, r_cavity, r_taper, psi, q_taper))
-        # print('sum(w_func)', w_func(r_tmp, t_tmp, r_cavity, w_r, w_i, w_t))
         y_tmp = y_mid + z_tmp * np.tan(np.radians(inc))
-        # print('y_tmp dtype', y_tmp.dtype)
         r_tmp = np.hypot(y_tmp, x_mid)
-        # print('r_tmp dtype', r_tmp.dtype)
         t_tmp = np.arctan2(y_tmp, x_mid)
-        # print('t_tmp dtype', t_tmp.dtype)
     return r_tmp, t_tmp, z_func(r_tmp, z0, r_cavity, r_taper, psi, q_taper)
 
 

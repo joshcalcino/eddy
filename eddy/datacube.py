@@ -36,6 +36,8 @@ class datacube(object):
         # Read in the data
 
         self.path = path
+        basename = os.path.basename(self.path)
+        self.name = os.path.splitext(basename)[0]
         self._read_FITS(path=self.path, fill=fill)
 
         # Clip down the cube.
@@ -46,8 +48,147 @@ class datacube(object):
             self._clip_cube_velocity(*velocity_range)
 
     # -- PIXEL DEPROJECTION -- #
+    #
+    # def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=None, psi=None,
+    #                 r_cavity=0.0, r_taper=None, q_taper=None, w_i=0.0, w_r=1.0,
+    #                 w_t=0.0, outframe='cylindrical', z_func=None,
+    #                 shadowed=False, **_):
+    #
+    # def disk_coords(self, x0=0.0, y0=0.0, xaxis=None, yaxis=None, inc=0.0, PA=0.0, z0=0.0, psi=0.0,
+    #                 r_cavity=0.0, r_taper=None, q_taper=None, w_i=0.0, w_r=1.0,
+    #                 w_t=0.0, frame='cylindrical', **_):
+    #     r"""
+    #     Get the disk coordinates given certain geometrical parameters and an
+    #     emission surface. The emission surface is most simply described as a
+    #     power law profile,
+    #
+    #     .. math::
+    #
+    #         z(r) = z_0 \times \left(\frac{r}{1^{\prime\prime}}\right)^{\psi}
+    #
+    #     where ``z0`` and ``psi`` can be provided by the user. With the increase
+    #     in spatial resolution afforded by interferometers such as ALMA there
+    #     are a couple of modifications that can be used to provide a better
+    #     match to the data.
+    #
+    #     An inner cavity can be included with the ``r_cavity`` argument which
+    #     makes the transformation:
+    #
+    #     .. math::
+    #
+    #         \tilde{r} = {\rm max}(0, r - r_{\rm cavity})
+    #
+    #     Note that the inclusion of a cavity will mean that other parameters,
+    #     such as ``z0``, would need to change as the radial axis has effectively
+    #     been shifted.
+    #
+    #     To account for the drop in emission surface in the outer disk where the
+    #     gas surface density decreases there are two descriptions. The preferred
+    #     way is to include an exponential taper to the power law profile,
+    #
+    #     .. math::
+    #
+    #         z_{\rm tapered}(r) = z(r) \times \exp\left( -\left[
+    #         \frac{r}{r_{\rm taper}} \right]^{q_{\rm taper}} \right)
+    #
+    #     where both ``r_taper`` and ``q_taper`` values must be set.
+    #
+    #     We can also include a warp which is parameterized by,
+    #
+    #     .. math::
+    #
+    #         z_{\rm warp}(r,\, t) = r \times \tan \left(w_i \times \exp\left(-
+    #         \frac{r^2}{2 w_r^2} \right) \times \sin(t - w_t)\right)
+    #
+    #     where ``w_i`` is the inclination in [radians] describing the warp at
+    #     the disk center. The width of the warp is given by ``w_r`` [arcsec] and
+    #     ``w_t`` in [radians] is the angle of nodes (where the warp is zero),
+    #     relative to the position angle of the disk, measured east of north.
+    #
+    #     .. WARNING::
+    #
+    #         The use of warps is largely untested. Use with caution!
+    #         If you are using a warp, increase the number of iterations
+    #         for the inference through ``self.disk_coords_niter`` (by default at
+    #         5). For high inclinations, also set ``shadowed=True``.
+    #
+    #     Args:
+    #         x0 (optional[float]): Source right ascension offset [arcsec].
+    #         y0 (optional[float]): Source declination offset [arcsec].
+    #         inc (optional[float]): Source inclination [degrees].
+    #         PA (optional[float]): Source position angle [degrees]. Measured
+    #             between north and the red-shifted semi-major axis in an
+    #             easterly direction.
+    #         z0 (optional[float]): Aspect ratio at 1" for the emission surface.
+    #             To get the far side of the disk, make this number negative.
+    #         psi (optional[float]): Flaring angle for the emission surface.
+    #         z1 (optional[float]): Correction term for ``z0``.
+    #         phi (optional[float]): Flaring angle correction term for the
+    #             emission surface.
+    #         r_cavity (optional[float]): Outer radius of a cavity. Within this
+    #             region the emission surface is taken to be zero.
+    #         w_i (optional[float]): Warp inclination in [degrees] at the disk
+    #             center.
+    #         w_r (optional[float]): Scale radius of the warp in [arcsec].
+    #         w_t (optional[float]): Angle of nodes of the warp in [degrees].
+    #         outframe (optional[str]): Frame of reference for the returned
+    #             coordinates. Either ``'cartesian'`` or ``'cylindrical'``.
+    #
+    #     Returns:
+    #         array, array, array: Three coordinate arrays with ``(r, phi, z)``,
+    #         in units of [arcsec], [radians], [arcsec], if
+    #         ``frame='cylindrical'`` or ``(x, y, z)``, all in units of [arcsec]
+    #         if ``frame='cartesian'``.
+    #     """
+    #
+    #     # Check the input variables.
+    #
+    #     outframe = outframe.lower()
+    #     if outframe not in ['cylindrical', 'cartesian']:
+    #         raise ValueError("frame must be 'cylindrical' or 'cartesian'.")
+    #
+    #     # Get the x and y-axis
+    #     if type(xaxis) == type(None):
+    #         xaxis = self.xaxis
+    #     if type(yaxis) == type(None):
+    #         yaxis = self.yaxis
+    #
+    #     # Apply the inclination concention.
+    #
+    #     inc = inc if inc < 90.0 else inc - 180.0
+    #
+    #     # Check that the necessary pairs are provided.
+    #
+    #     msg = "Must specify either both or neither of `{}` and `{}`."
+    #     if (r_taper is not None) != (q_taper is not None):
+    #         raise ValueError(msg.format('r_taper', 'q_taper'))
+    #
+    #     # Set the defaults.
+    #
+    #     z0 = 0.0 if z0 is None else z0
+    #     psi = 1.0 if psi is None else psi
+    #     r_cavity = 0.0 if r_cavity is None else r_cavity
+    #     r_taper = np.inf if r_taper is None else r_taper
+    #     q_taper = 1.0 if q_taper is None else q_taper
+    #
+    #
+    #     # Calculate the pixel values.
+    #
+    #     if self.shadowed:
+    #         coords = self.get_shadowed_coords(x0, y0, inc, PA, z_func, w_func)
+    #     else:
+    #         # coords = dp.get_flared_coords(x0, y0, xaxis, yaxis, inc, PA, z0,
+    #         #                      r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, self.disk_coords_niter)
+    #
+    #         coords = self.get_flared_coords(x0, y0, xaxis, yaxis, inc, PA, z0,
+    #                               r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, self.disk_coords_niter)
+    #     if outframe == 'cylindrical':
+    #         return coords
+    #     r, t, z = coords
+    #     return r * np.cos(t), r * np.sin(t), z
 
-    def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=None, psi=None,
+
+    def disk_coords(self, x0=0.0, y0=0.0, xaxis=None, yaxis=None, inc=0.0, PA=0.0, z0=None, psi=None,
                     r_cavity=0.0, r_taper=None, q_taper=None, w_i=0.0, w_r=1.0,
                     w_t=0.0, outframe='cylindrical', z_func=None,
                     shadowed=False, **_):
@@ -330,6 +471,7 @@ class datacube(object):
 
         self.header = fits.getheader(path)
         self.data = np.squeeze(fits.getdata(self.path))
+        print('data in read fits', self.data)
         if fill is not None:
             self.data = np.where(np.isfinite(self.data), self.data, fill)
 
