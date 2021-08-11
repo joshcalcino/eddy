@@ -28,15 +28,8 @@ If you want to live on the edge, you can clone the repository and install that,
 but I cannot promise everything will work as described here.
 
 
-
 Contents
 --------
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Documentation
-   
-   user/rotationmap
 
 .. toctree::
    :maxdepth: 2
@@ -44,6 +37,8 @@ Contents
 
    tutorials/tutorial_1
    tutorials/tutorial_2
+   tutorials/tutorial_3
+   tutorials/tutorial_4
 
 
 Support

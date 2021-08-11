@@ -5,6 +5,7 @@ import numpy as np
 from astropy.io import fits
 import scipy.constants as sc
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator, MultipleLocator
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -43,7 +44,7 @@ class datacube(object):
         # Clip down the cube.
 
         if FOV is not None:
-            self._clip_cube_spatial(FOV / 2.0)
+            self._clip_cube_spatial(FOV / 2.0, initial_load=True)
         if velocity_range is not None:
             self._clip_cube_velocity(*velocity_range)
 
@@ -190,7 +191,7 @@ class datacube(object):
 
     def disk_coords(self, x0=0.0, y0=0.0, xaxis=None, yaxis=None, inc=0.0, PA=0.0, z0=None, psi=None,
                     r_cavity=0.0, r_taper=None, q_taper=None, w_i=0.0, w_r=1.0,
-                    w_t=0.0, outframe='cylindrical', z_func=None,
+                    w_t=0.0, z_func=None, outframe='cylindrical',
                     shadowed=False, **_):
         r"""
         Get the disk coordinates given certain geometrical parameters and an
@@ -201,13 +202,14 @@ class datacube(object):
 
             z(r) = z_0 \times \left(\frac{r}{1^{\prime\prime}}\right)^{\psi}
 
-        where ``z0`` and ``psi`` can be provided by the user. With the increase
-        in spatial resolution afforded by interferometers such as ALMA there
-        are a couple of modifications that can be used to provide a better
-        match to the data.
+        where ``z0`` and ``psi`` can be provided by the user. For the case of
+        a non-zero ``z0``, but ``psi=1``, we recover the conical surface
+        described in Rosenfeld et al. (2013).
 
-        An inner cavity can be included with the ``r_cavity`` argument which
-        makes the transformation:
+        With the increase in spatial resolution afforded by interferometers
+        such as ALMA there are a couple of modifications that can be used to
+        provide a better match to the data. For example, an inner cavity can be
+        included with the ``r_cavity`` argument which makes the transformation:
 
         .. math::
 
@@ -228,6 +230,19 @@ class datacube(object):
 
         where both ``r_taper`` and ``q_taper`` values must be set.
 
+        If the emission surface is more complex than the analytical form
+        described above, users may provide their own function, ``z_func``,
+        which should return the emission height in [arcsec] for a midplane
+        radius in [arcsec].
+
+        For certain emission surfaces and high inclination disks, the
+        transformation from on-sky coordinates to disk-frame coordinates can be
+        hindered by the shadowing of certain regions of the disk. This is a
+        particularly big problem if the emission surface is not monotonically
+        increasing with radius. For some instances, the default deprojection
+        algorithm will fail, and a more robust, albeit slower, algormith is
+        needed. This can be turned on with ``shadowed=True``.
+
         We can also include a warp which is parameterized by,
 
         .. math::
@@ -247,29 +262,42 @@ class datacube(object):
             for the inference through ``self.flared_niter`` (by default at
             5). For high inclinations, also set ``shadowed=True``.
 
+        As it is also possible to determine the rotation direction of the disk
+        on the sky, we can encode this information in the sign of the
+        inclination. A positive inclination describes a clockwise rotating
+        disk, while a negative inclination describes an anti-clockwise rotating
+        disk. For 2D disks, i.e., those without an emission surface, this will
+        not make a difference, but for 3D disks, this will dictate the
+        projection of the surface on the sky.
+
         Args:
-            x0 (optional[float]): Source right ascension offset [arcsec].
-            y0 (optional[float]): Source declination offset [arcsec].
-            inc (optional[float]): Source inclination [degrees]. A positive
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [degrees]. A positive
                 inclination denotes a disk rotating clockwise on the sky, while
                 a negative inclination represents a counter-clockwise rotation.
-            PA (optional[float]): Source position angle [degrees]. Measured
+            PA (Optional[float]): Source position angle [degrees]. Measured
                 between north and the red-shifted semi-major axis in an
                 easterly direction.
-            z0 (optional[float]): Aspect ratio at 1" for the emission surface.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
                 To get the far side of the disk, make this number negative.
-            psi (optional[float]): Flaring angle for the emission surface.
-            z1 (optional[float]): Correction term for ``z0``.
-            phi (optional[float]): Flaring angle correction term for the
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Correction term for ``z0``.
+            phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            r_cavity (optional[float]): Outer radius of a cavity. Within this
+            r_cavity (Optional[float]): Outer radius of a cavity. Within this
                 region the emission surface is taken to be zero.
-            w_i (optional[float]): Warp inclination in [degrees] at the disk
+            w_i (Optional[float]): Warp inclination in [degrees] at the disk
                 center.
-            w_r (optional[float]): Scale radius of the warp in [arcsec].
-            w_t (optional[float]): Angle of nodes of the warp in [degrees].
-            outframe (optional[str]): Frame of reference for the returned
+            w_r (Optional[float]): Scale radius of the warp in [arcsec].
+            w_t (Optional[float]): Angle of nodes of the warp in [degrees].
+            z_func (Optional[callable]): A user-defined emission surface
+                function that will return ``z`` in [arcsec] for a given ``r``
+                in [arcsec]. This will override the analytical form.
+            outframe (Optional[str]): Frame of reference for the returned
                 coordinates. Either ``'cartesian'`` or ``'cylindrical'``.
+            shadowed (Optional[bool]): Whether to use the slower, but more
+                robust method for deprojecting pixel values.
 
         Returns:
             array, array, array: Three coordinate arrays with ``(r, phi, z)``,
@@ -457,6 +485,105 @@ class datacube(object):
         t_disk = np.arctan2(y_disk, x_disk)
         return x_disk, y_disk, r_disk, t_disk
 
+    # -- MASKING FUNCTIONS -- #
+
+    def get_mask(self, r_min=None, r_max=None, exclude_r=False, phi_min=None,
+                 phi_max=None, exclude_phi=False, abs_phi=False, x0=0.0,
+                 y0=0.0, inc=0.0, PA=0.0, z0=None, psi=None, r_cavity=None,
+                 r_taper=None, q_taper=None, w_i=None, w_r=None, w_t=None,
+                 z_func=None, shadowed=False, mask_frame='disk',
+                 user_mask=None):
+        """
+        Returns a 2D mask for pixels in the given region. The mask can be
+        specified in either disk-centric coordinates, ``mask_frame='disk'``,
+        or on the sky, ``mask_frame='sky'``. If sky-frame coordinates are
+        requested, the geometrical parameters (``inc``, ``PA``, ``z0``, etc.)
+        are ignored, however the source offsets, ``x0``, ``y0``, are still
+        considered.
+
+        Args:
+            r_min (Optional[float]): Minimum midplane radius of the annulus in
+                [arcsec]. Defaults to minimum deprojected radius.
+            r_max (Optional[float]): Maximum midplane radius of the annulus in
+                [arcsec]. Defaults to the maximum deprojected radius.
+            exclude_r (Optional[bool]): If ``True``, exclude the provided
+                radial range rather than include.
+            phi_min (Optional[float]): Minimum polar angle of the segment of
+                the annulus in [deg]. Note this is the polar angle, not the
+                position angle.
+            phi_max (Optional[float]): Maximum polar angle of the segment of
+                the annulus in [deg]. Note this is the polar angle, not the
+                position angle.
+            exclude_phi (Optional[bool]): If ``True``, exclude the provided
+                polar angle range rather than include it.
+            abs_phi (Optional[bool]): If ``True``, take the absolute value of
+                the polar angle such that it runs from 0 [deg] to 180 [deg].
+            x0 (Optional[float]): Source center offset along the x-axis in
+                [arcsec].
+            y0 (Optional[float]): Source center offset along the y-axis in
+                [arcsec].
+            inc (Optional[float]): Inclination of the disk in [degrees].
+            PA (Optional[float]): Position angle of the disk in [degrees],
+                measured east-of-north towards the redshifted major axis.
+            z0 (Optional[float]): Emission height in [arcsec] at a radius of
+                1".
+            psi (Optional[float]): Flaring angle of the emission surface.
+            z_func (Optional[function]): A function which provides
+                :math:`z(r)`. Note that no checking will occur to make sure
+                this is a valid function.
+            shadowed (Optional[bool]): Whether to use the slower, but more
+                robust, deprojection method for shadowed disks.
+
+        Returns:
+            A 2D array mask matching the shape of a channel.
+        """
+
+        # Check the requested frame.
+
+        mask_frame = mask_frame.lower()
+        if mask_frame not in ['disk', 'sky']:
+            raise ValueError("mask_frame must be 'disk' or 'sky'.")
+        if mask_frame == 'sky':
+            inc = 0.0
+            PA = 0.0
+
+        # Calculate the deprojected pixel coordaintes.
+
+        rvals, pvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
+                                        psi=psi, r_cavity=r_cavity,
+                                        r_taper=r_taper, q_taper=q_taper,
+                                        w_i=w_i, w_r=w_r, w_t=w_t,
+                                        z_func=z_func, frame='cylindrical',
+                                        shadowed=shadowed)[:2]
+        pvals = abs(pvals) if abs_phi else pvals
+
+        # Radial mask.
+
+        r_min = np.nanmin(rvals) if r_min is None else r_min
+        r_max = np.nanmax(rvals) if r_max is None else r_max
+        if r_min >= r_max:
+            raise ValueError("`r_min` must be smaller than `r_max`.")
+        r_mask = np.logical_and(rvals >= r_min, rvals <= r_max)
+        r_mask = ~r_mask if exclude_r else r_mask
+
+        # Azimuthal mask.
+
+        phi_min = np.nanmin(pvals) if phi_min is None else np.radians(phi_min)
+        phi_max = np.nanmax(pvals) if phi_max is None else np.radians(phi_max)
+        if phi_min >= phi_max:
+            raise ValueError("`PA_min` must be smaller than `PA_max`.")
+        phi_mask = np.logical_and(pvals >= phi_min, pvals <= phi_max)
+        phi_mask = ~phi_mask if exclude_phi else phi_mask
+
+        # Combine and return.
+
+        mask = r_mask * phi_mask
+        if np.sum(mask) == 0:
+            raise ValueError("There are zero pixels in the mask.")
+        if user_mask is not None:
+            mask *= user_mask
+        return mask
+
     # -- DATA I/O -- #
 
     def _read_FITS(self, path, fill=None):
@@ -479,6 +606,8 @@ class datacube(object):
 
         self.xaxis = self._readpositionaxis(a=1)
         self.yaxis = self._readpositionaxis(a=2)
+        self.xaxis -= self.dpix
+        self.yaxis -= self.dpix
 
         # Spectral axis.
 
@@ -565,31 +694,46 @@ class datacube(object):
         self.velax = self.velax[i:j+1]
         self.data = self.data[i:j+1]
 
-    def _clip_cube_spatial(self, radius):
+    def clip_cube_spatial(self, FOV):
+        """Applies the new FOV."""
+        if FOV > (self.xaxis.max() - self.xaxis.min()):
+            raise ValueError("Cannot apply a larger FOV.")
+        xa, xb, ya, yb = self._clip_cube_spatial(FOV / 2.0, False, True)
+        self.data = self.data[ya:yb, xa:xb]
+        self.error = self.error[ya:yb, xa:xb]
+        self.mask = self.mask[ya:yb, xa:xb]
+        self.xaxis = self.xaxis[xa:xb]
+        self.yaxis = self.yaxis[ya:yb]
+
+    def _clip_cube_spatial(self, radius, initial_load=True, indices=False):
         """Clip the cube plus or minus clip arcseconds from the origin."""
         if radius > min(self.xaxis.max(), self.yaxis.max()):
             print('WARNING: FOV = {:.1f}" larger than '.format(radius * 2)
                   + 'FOV of cube: {:.1f}".'.format(self.xaxis.max() * 2))
         else:
-            self._original_shape = self.data.shape
+            if initial_load:
+                self._original_shape = self.data.shape
             xa = abs(self.xaxis - radius).argmin()
             if self.xaxis[xa] < radius:
                 xa -= 1
-            self._xa = xa
             xb = abs(self.xaxis + radius).argmin()
             if -self.xaxis[xb] < radius:
                 xb += 1
             xb += 1
-            self._xb = xb
             ya = abs(self.yaxis + radius).argmin()
             if -self.yaxis[ya] < radius:
                 ya -= 1
-            self._ya = ya
             yb = abs(self.yaxis - radius).argmin()
             if self.yaxis[yb] < radius:
                 yb += 1
             yb += 1
-            self._yb = yb
+            if initial_load:
+                self._xa = xa
+                self._xb = xb
+                self._ya = ya
+                self._yb = yb
+            if indices:
+                return xa, xb, ya, yb
             if self.data.ndim == 3:
                 self.data = self.data[:, ya:yb, xa:xb]
             else:
@@ -630,7 +774,7 @@ class datacube(object):
         try:
             a_len = self.header['naxis%d' % a]
             a_del = self.header['cdelt%d' % a]
-            a_pix = self.header['crpix%d' % a] - 0.5
+            a_pix = self.header['crpix%d' % a]
         except KeyError:
             if self._user_pixel_scale is None:
                 print('WARNING: No axis information found.')
@@ -744,23 +888,68 @@ class datacube(object):
         from astropy.convolution import convolve
         return convolve(image, kernel, preserve_nan=True)
 
+    # -- DIAGNOSTIC FUNCTIONS -- #
+
+    def estimate_cube_RMS(self, N=10, r_in=0.0, r_out=1e10):
+        """
+        Estimate RMS of the cube based on first and last `N` channels and a
+        circular area described by an inner and outer radius.
+
+        Args:
+            N (int): Number of edge channels to include.
+            r_in (float): Inner edge of pixels to consider in [arcsec].
+            r_out (float): Outer edge of pixels to consider in [arcsec].
+
+        Returns:
+            RMS (float): The RMS based on the requested pixel range.
+        """
+        r_dep = np.hypot(self.xaxis[None, :], self.yaxis[:, None])
+        rmask = np.logical_and(r_dep >= r_in, r_dep <= r_out)
+        rms = np.concatenate([self.data[:int(N)], self.data[-int(N):]])
+        rms = np.where(rmask[None, :, :], rms, np.nan)
+        return np.sqrt(np.nansum(rms**2) / np.sum(np.isfinite(rms)))
+
+    def integrated_spectrum(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, r_min=None,
+                            r_max=None):
+        """
+        Returns the integrated spectrum over a specified region.
+
+        Args:
+            x0 (Optional[float]): Right Ascension offset in [arcsec].
+            y0 (Optional[float]): Declination offset in [arcsec].
+            inc (Optional[float]): Disk inclination in [deg].
+            PA (Optional[float]): Disk position angle in [deg].
+            r_min (Optional[float]): Radius to integrate out from in [arcsec].
+            r_max (Optional[float]): Radius to integrate out to in [arcsec].
+
+        Returns:
+            spectrum, uncertainty (array, array): Something about these.
+        """
+        rr = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA)[0]
+        r_max = rr.max() if r_max is None else r_max
+        r_min = 0.0 if r_min is None else r_min
+        mask = np.logical_and(rr <= r_max, rr >= r_min)
+        nbeams = np.where(mask, 1, 0).sum() / self.pix_per_beam
+        spectrum = np.array([np.nansum(c[mask]) for c in self.data])
+        spectrum *= self.beams_per_pix
+        uncertainty = np.sqrt(nbeams) * self.estimate_cube_RMS()
+        return spectrum, uncertainty
+
     # -- PLOTTING FUNCTIONS -- #
 
     @staticmethod
     def cmap():
-        import matplotlib.pyplot as plt
         import matplotlib.colors as mcolors
-        c2 = plt.cm.Reds(np.linspace(0, 1, 32))
-        c1 = plt.cm.Blues_r(np.linspace(0, 1, 32))
-        c1 = np.vstack([c1, [1, 1, 1, 1]])
-        colors = np.vstack((c1, c2))
+        c2 = plt.cm.Reds(np.linspace(0, 1, 16))
+        c1 = plt.cm.Blues_r(np.linspace(0, 1, 16))
+        colors = np.vstack((c1, np.ones((2, 4)), c2))
         return mcolors.LinearSegmentedColormap.from_list('eddymap', colors)
 
     @property
     def extent(self):
         """Cube field of view for use with Matplotlib's ``imshow``."""
-        return [self.xaxis[0], self.xaxis[-1],
-                self.yaxis[0], self.yaxis[-1]]
+        return [self.xaxis[0]+self.dpix/2.0, self.xaxis[-1]-self.dpix/2.0,
+                self.yaxis[0]-self.dpix/2.0, self.yaxis[-1]+self.dpix/2.0]
 
     @property
     def FOV(self):
@@ -787,7 +976,6 @@ class datacube(object):
 
     def _gentrify_plot(self, ax):
         """Gentrify the plot with a grid, label axes and a beam."""
-        from matplotlib.ticker import MaxNLocator
         ax.set_aspect(1)
         ax.grid(ls='--', color='k', alpha=0.2, lw=0.5)
         ax.tick_params(which='both', right=True, top=True)
@@ -795,10 +983,62 @@ class datacube(object):
         ax.set_ylim(self.yaxis.min(), self.yaxis.max())
         ax.xaxis.set_major_locator(MaxNLocator(5, min_n_ticks=3))
         ax.yaxis.set_major_locator(MaxNLocator(5, min_n_ticks=3))
+        ticks = np.diff(ax.xaxis.get_majorticklocs()).mean() / 5.0
+        ax.xaxis.set_minor_locator(MultipleLocator(ticks))
+        ax.yaxis.set_minor_locator(MultipleLocator(ticks))
         ax.set_xlabel('Offset (arcsec)')
         ax.set_ylabel('Offset (arcsec)')
         if self.bmaj is not None:
             self.plot_beam(ax=ax)
+
+    def plot_maximum(self, ax=None, imshow_kwargs=None, return_fig=False):
+        """
+        Plot the maximum value along each spectrum.
+
+        Args:
+            ax (Optional[matplotlib axis]): Axis used for the plotting.
+            imshow_kwargs (Optional[dict]): Kwargs to pass to
+                ``matplotlib.imshow``.
+            return_fig (Optional[bool]): Whether to return the figure instance.
+                If an axis was provided, this will always be ``False``.
+
+        Returns:
+            fig (matplotlib figure): If ``return_fig=True``, will return the
+                figure for continued plotting.
+        """
+
+        # Dummy axis to overplot.
+
+        if ax is None:
+            fig, ax = plt.subplots()
+        else:
+            return_fig = False
+
+        # Collapse the data.
+
+        dmax = np.nanmax(self.data, axis=0)
+        vmax = np.percentile(dmax, [98])
+
+        # Imshow defaults and plot the figure.
+
+        imshow_kwargs = {} if imshow_kwargs is None else imshow_kwargs
+        imshow_kwargs['interpolation'] = 'nearest'
+        imshow_kwargs['extent'] = self.extent
+        imshow_kwargs['origin'] = 'lower'
+        imshow_kwargs['cmap'] = imshow_kwargs.pop('cmap', 'turbo')
+        imshow_kwargs['vmin'] = imshow_kwargs.pop('vmin', 0.0)
+        imshow_kwargs['vmax'] = imshow_kwargs.pop('vmax', vmax)
+
+        im = ax.imshow(dmax, **imshow_kwargs)
+        cb = plt.colorbar(im, ax=ax, pad=0.03, extend='both')
+        cb.set_label('Peak Intensity (Jy/beam)', rotation=270, labelpad=13)
+        cb.minorticks_on()
+        self._gentrify_plot(ax=ax)
+
+        # Returns
+
+        if return_fig:
+            return fig
 
     def plot_surface(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=None, psi=None,
                      r_cavity=None, r_taper=None, q_taper=None, w_i=None,
@@ -846,6 +1086,8 @@ class datacube(object):
 
         if ax is None:
             fig, ax = plt.subplots()
+        else:
+            return_fig = False
 
         rvals, tvals, zvals = self.disk_coords(x0=x0, y0=y0,
                                                inc=inc, PA=PA,
@@ -919,6 +1161,38 @@ class datacube(object):
             ax.contour(self.xaxis, self.yaxis, ttmp, **kw)
         ax.set_xlim(max(ax.get_xlim()), min(ax.get_xlim()))
         ax.set_aspect(1)
+
+        if return_fig:
+            return fig
+
+    def plot_spectrum(self, ax=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
+                      r_min=None, r_max=None, return_fig=False):
+        """
+        Plot the integrated spectrum.
+
+        Args:
+            x0 (Optional[float]): Right Ascension offset in [arcsec].
+            y0 (Optional[float]): Declination offset in [arcsec].
+            inc (Optional[float]): Disk inclination in [deg].
+            PA (Optional[float]): Disk position angle in [deg].
+            r_max (Optional[float]): Radius to integrate out to in [arcsec].
+        """
+        if ax is None:
+            fig, ax = plt.subplots()
+        else:
+            return_fig = False
+        x = self.velax.copy() / 1e3
+        y, dy = self.integrated_spectrum(x0, y0, inc, PA, r_min, r_max)
+        ax.axhline(0.0, ls='--', lw=1.0, color='0.9', zorder=-9)
+        ax.step(x, y, where='mid', lw=1.0, color='k')
+        ax.errorbar(x, y, dy, fmt=' ', lw=1.0, color='k', zorder=-8)
+        ax.set_xlabel("Velocity (km/s)")
+        ax.set_ylabel("Integrated Flux (Jy)")
+        ax.set_xlim(x[0], x[-1])
+        ticks = np.diff(ax.xaxis.get_majorticklocs()).mean() / 5.0
+        ax.xaxis.set_minor_locator(MultipleLocator(ticks))
+        ticks = np.diff(ax.yaxis.get_majorticklocs()).mean() / 5.0
+        ax.yaxis.set_minor_locator(MultipleLocator(ticks))
 
         if return_fig:
             return fig
