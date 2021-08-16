@@ -598,7 +598,7 @@ class datacube(object):
 
         self.header = fits.getheader(path)
         self.data = np.squeeze(fits.getdata(self.path))
-        print('data in read fits', self.data)
+
         if fill is not None:
             self.data = np.where(np.isfinite(self.data), self.data, fill)
 

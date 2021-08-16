@@ -10,6 +10,7 @@ from .helper_functions import plot_walkers, plot_corner, random_p0
 import matplotlib.pyplot as plt
 import warnings
 import os
+import pickle
 from astropy.io import fits
 
 warnings.filterwarnings("ignore")
@@ -211,7 +212,7 @@ class rotationmap(datacube):
             self.median_params = medians
 
             # Get the max likelihood model
-            idx = np.argmin(np.concatenate(sampler.lnprobability.T[nburnin:]))
+            idx = np.argmin(np.concatenate(sampler.lnprobability.T[nburnin.size:]))
             p0 = samples[idx]
             max_likelihood = rotationmap._populate_dictionary(p0, params)
             max_likelihood = self.verify_params_dictionary(max_likelihood)
@@ -1002,6 +1003,7 @@ class rotationmap(datacube):
         Save the residuals as a FITS file.
         """
         if model is None:
+            # model = np.squeeze(fits.getdata(self.path)) * 1e3 - self.evaluate_models(samples, params)
             model = self.data * 1e3 - self.evaluate_models(samples, params)
         if self.header['naxis1'] > self.nypix:
             canvas = np.ones(self._original_shape) * np.nan
@@ -1020,7 +1022,7 @@ class rotationmap(datacube):
         save_types = [int, str, float, bytes]
         params_to_save = {}
         for key in params.keys():
-            if params[key] in save_types:
+            if type(params[key]) in save_types:
                 params_to_save[key] = params[key]
 
         pickle.dump(params_to_save, open(savename, 'wb'))
