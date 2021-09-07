@@ -1229,7 +1229,7 @@ class rotationmap(datacube):
         max_v = np.min([np.nanmax(data), -np.nanmin(data)])
 
 
-        if dv == None and nv = None:
+        if dv == None and nv == None:
             raise ValueError("Parameter 'dv' or 'nv' must be specified in function 'v_area'.")
 
         if dv != None:
@@ -1241,7 +1241,7 @@ class rotationmap(datacube):
         v_area_data = ((np.sum(np.where(data > v, 1, 0)) - np.sum(np.where(-data > v, 1, 0)))/
                     (np.sum(np.where(-data > v, 1, 0)) + np.sum(np.where(data > v, 1, 0))))
 
-        return v_area_data
+        return v_area_data, v
 
     def v_ratio(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=None, r_max=None,
                     r_min=0.0, smooth=False, mask=None):
@@ -1315,7 +1315,7 @@ class rotationmap(datacube):
             nv (Optional[float]): The number of velocity samples between 0
                                     and a maximum velocity.
             smooth (Optional[bool/float]): Smooth the line of nodes. If
-                ``True``, smoth with the beam kernel, otherwise ``smooth``
+                ``True``, smooth with the beam kernel, otherwise ``smooth``
                 describes the FWHM of the Gaussian convolution kernel in
                 [arcsec].
             mask (Optional[array]): An array containing booleans that define
@@ -1343,9 +1343,20 @@ class rotationmap(datacube):
         # Default vlsr.
         vlsr = np.nanmedian(data) if vlsr is None else vlsr
 
+        extent = [self.xaxis.max(), self.xaxis.min(), self.yaxis.min(), self.xaxis.max()]
+
         # Shift and rotate the image.
         data = self._shift_center(dx=x0, dy=y0, data=data, save=False)
         data = self._rotate_image(PA=PA, data=data, save=False)
+
+        # replace small numbers with nans since scipy.ndimage.shift and rotate can't handle nans ...
+        small_number = 1e-8
+        data = np.where(np.abs(data) > small_number, data, np.nan)
+
+        # Need to reobtain and apply the mask...
+        mask = self.get_mask(r_min=r_min, r_max=r_max, x0=0.0,
+                     y0=0.0, inc=inc, PA=90.0)
+        data[~mask] = None
 
         # Get the coordinates along the x and y axis
         x_coords = []
@@ -1361,42 +1372,48 @@ class rotationmap(datacube):
             except ValueError:
                 pass
 
-    min_index = np.argmin(abs(np.array(x_coords) - int(len(data[:, 0])/2)))
-    # print(min_index, len(x_coords))
-    # print(x_coords)
-    if np.mean(data[:min_index, :]) > 0:
-        s_px = x_coords[:min_index]
-        s_py = y_coords[:min_index]
+        # plt.imshow(data/1e3, origin='lower', cmap='RdBu', extent=extent, vmin=-3, vmax=3)
+        # plt.plot(self.xaxis[x_coords], self.yaxis[y_coords], color='k')
+        # plt.xlim([-4.5, 4.5])
+        # plt.ylim([-4.5, 4.5])
+        # plt.show()
 
-        s_mx = x_coords[min_index:]
-        s_my = y_coords[min_index:]
-        v_arr = []
-        for i in range(min([len(s_px), len(s_mx)])):
-            v_arr.append((data[s_py[-(i+1)], s_px[-(i+1)]] + data[s_my[i], s_mx[i]])/(data[s_py[-(i+1)], s_px[-(i+1)]] - data[s_my[i], s_mx[i]]))
-    else:
-        s_mx = x_coords[:min_index]
-        s_my = y_coords[:min_index]
+        min_index = np.argmin(abs(np.array(x_coords) - int(len(data[:, 0])/2)))
+        # print(min_index, len(x_coords))
+        # print(x_coords)
+        if np.mean(data[:min_index, :]) > 0:
+            s_px = x_coords[:min_index]
+            s_py = y_coords[:min_index]
 
-        s_px = x_coords[min_index:]
-        s_py = y_coords[min_index:]
+            s_mx = x_coords[min_index:]
+            s_my = y_coords[min_index:]
+            v_arr = []
+            for i in range(min([len(s_px), len(s_mx)])):
+                v_arr.append((data[s_py[-(i+1)], s_px[-(i+1)]] + data[s_my[i], s_mx[i]])/(data[s_py[-(i+1)], s_px[-(i+1)]] - data[s_my[i], s_mx[i]]))
+        else:
+            s_mx = x_coords[:min_index]
+            s_my = y_coords[:min_index]
 
-        v_arr = []
-        for i in range(min([len(s_px), len(s_mx)])):
-            # print(data[s_py[i], s_px[i]])
-            v_arr.append((data[s_py[i], s_px[i]] + data[s_my[-(i+1)], s_mx[-(i+1)]])/(data[s_py[i], s_px[i]] - data[s_my[-(i+1)], s_mx[-(i+1)]]))
-        # v_arr.append((data[s_px[i], s_py[i]] + data[s_mx[i], s_my[i]])/(data[s_px[i], s_py[i]] - data[s_mx[i], s_my[i]]))
-    # print(s_px, s_mx)
-    # print(len(s_px), len(s_mx))
+            s_px = x_coords[min_index:]
+            s_py = y_coords[min_index:]
 
-    if len(s_px) >= len(s_mx):
-        max_s = np.max(np.abs(s_mx))
-        min_s = np.min(np.abs(s_mx))
+            v_arr = []
+            for i in range(min([len(s_px), len(s_mx)])):
+                # print(data[s_py[i], s_px[i]])
+                v_arr.append((data[s_py[i], s_px[i]] + data[s_my[-(i+1)], s_mx[-(i+1)]])/(data[s_py[i], s_px[i]] - data[s_my[-(i+1)], s_mx[-(i+1)]]))
+            # v_arr.append((data[s_px[i], s_py[i]] + data[s_mx[i], s_my[i]])/(data[s_px[i], s_py[i]] - data[s_mx[i], s_my[i]]))
+        # print(s_px, s_mx)
+        # print(len(s_px), len(s_mx))
 
-    else:
-        max_s = np.max(np.abs(s_px))
-        min_s = np.min(np.abs(s_px))
+        if len(s_px) >= len(s_mx):
+            max_s = np.max(np.abs(s_mx))
+            min_s = np.min(np.abs(s_mx))
+            return np.array(v_arr), np.linspace(max_s, min_s, len(s_mx))
 
-    return np.array(v_arr), np.linspace(max_s, min_s, len(s_px))
+        else:
+            max_s = np.max(np.abs(s_px))
+            min_s = np.min(np.abs(s_px))
+            return np.array(v_arr), np.linspace(max_s, min_s, len(s_px))
 
     # -- Functions to help determine the emission height. -- #
 
