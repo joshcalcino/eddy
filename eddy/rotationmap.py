@@ -207,7 +207,9 @@ class rotationmap(datacube):
             samples = sampler.get_chain(discard=nburnin[-1], flat=True)
             p0 = np.median(samples, axis=0)
             medians = rotationmap._populate_dictionary(p0, params.copy())
+            print(medians)
             medians = self.verify_params_dictionary(medians)
+            print(medians)
 
             self.median_params = medians
 
@@ -1019,7 +1021,7 @@ class rotationmap(datacube):
         else:
             savename = "{}_{}_params.pkl".format(self.name, name)
 
-        save_types = [int, str, float, bytes]
+        save_types = [int, str, float, bytes, bool, np.float64]
         params_to_save = {}
         for key in params.keys():
             if type(params[key]) in save_types:
@@ -1293,6 +1295,117 @@ class rotationmap(datacube):
         # Rotate back to sky-plane and return.
         x, y = self._rotate_coords(x, -y, PA)
         return x + x0, y + y0
+
+    def v_area(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=None, r_max=None,
+                    r_min=0.0, dv=None, nv=None, smooth=False, mask=None):
+        """
+        Find the ratio of the area of the velocity map enclosed by
+        specific velocities.
+
+        Args:
+            x0 (Optional[float]): Source center offset along x-axis in
+                [arcsec].
+            y0 (Optional[float]): Source center offset along y-axis in
+                [arcsec].
+            inc (Optional[float]): Disk inclination in [degrees].
+            PA (Optioanl[float]): Source position angle in [deg].
+            vlsr (Optional[float]): Systemic velocity in [m/s].
+            r_max (Optional[float]): Maximum offset to consider in [arcsec].
+            r_min (Optional[float]): Minimum offset to consider in [arcsec].
+                The default (and recommended) value is 0.
+            dv (Optional[float]): The spacing between velocity samples.
+            nv (Optional[float]): The number of velocity samples between 0
+                                    and a maximum velocity.
+            smooth (Optional[bool/float]): Smooth the line of nodes. If
+                ``True``, smoth with the beam kernel, otherwise ``smooth``
+                describes the FWHM of the Gaussian convolution kernel in
+                [arcsec].
+            mask (Optional[array]): An array containing booleans that define
+                a mask to be applied to the data. This is necessary to avoid
+                including noisy parts of the data. Default is obtained from
+                ``get_mask``.
+
+        Returns:
+            array, array: Arrays of ``v_area`` and ``velocity``, which are
+            the normalised area enclosed, ``v_area``, by the ``velocity`` array,
+            respectively.
+        """
+
+        # Default parameters.
+        vlsr = np.nanmedian(self.data) if vlsr is None else vlsr
+        r_max = 0.5 * self.xaxis.max() if r_max is None else r_max
+
+        # Get a mask if one not defined
+        if mask == None:
+            mask = self.get_mask(r_min=r_min, r_max=r_max, x0=x0,
+                         y0=y0, inc=inc, PA=PA)
+
+        # Get the data and apply the mask
+        data = self.data.copy() * mask
+
+        # Max velocity
+        max_v = np.min([np.nanmax(data), -np.nanmin(data)])
+
+
+        if dv == None and nv = None:
+            raise ValueError("Parameter 'dv' or 'nv' must be specified in function 'v_area'.")
+
+        if dv != None:
+            nv = int(max_v/dv)
+
+        # Velocity samples
+        v = np.linspace(0.0, max_v, nv)
+
+        v_area_data = (np.sum(np.where(data > v, 1, 0)) - np.sum(np.where(-data > v, 1, 0)))/(np.sum(np.where(-data > v, 1, 0)) + np.sum(np.where(data > v, 1, 0)))
+
+        return v_area_data
+
+    def v_ratio(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=None, r_max=None,
+                    r_min=0.0, smooth=False, mask=None):
+        """
+        The ratio between the maximum and minimum values in the velocity map.
+        Computed using ``(max(data) + min(data))/(max(data) - min(data))``.
+
+        Args:
+            x0 (Optional[float]): Source center offset along x-axis in
+                [arcsec].
+            y0 (Optional[float]): Source center offset along y-axis in
+                [arcsec].
+            inc (Optional[float]): Disk inclination in [degrees].
+            PA (Optioanl[float]): Source position angle in [deg].
+            vlsr (Optional[float]): Systemic velocity in [m/s].
+            r_max (Optional[float]): Maximum offset to consider in [arcsec].
+            r_min (Optional[float]): Minimum offset to consider in [arcsec].
+                The default (and recommended) value is 0.
+            dv (Optional[float]): The spacing between velocity samples.
+            nv (Optional[float]): The number of velocity samples between 0
+                                    and a maximum velocity.
+            smooth (Optional[bool/float]): Smooth the line of nodes. If
+                ``True``, smoth with the beam kernel, otherwise ``smooth``
+                describes the FWHM of the Gaussian convolution kernel in
+                [arcsec].
+            mask (Optional[array]): An array containing booleans that define
+                a mask to be applied to the data. This is necessary to avoid
+                including noisy parts of the data. Default is obtained from
+                ``get_mask``.
+
+        Returns:
+            float: The normalised velocity ratio.
+        """
+        # Default parameters.
+        vlsr = np.nanmedian(self.data) if vlsr is None else vlsr
+        r_max = 0.5 * self.xaxis.max() if r_max is None else r_max
+        r_min = 0.0 if r_min is None else r_min
+
+        if mask == None:
+            mask = self.get_mask(r_min=r_min, r_max=r_max, x0=x0,
+                         y0=y0, inc=0.0, inc=inc, PA=PA)
+
+        data = self.data.copy() * mask
+        return (np.nanmax(data) + np.nanmin(data))/(np.nanmax(data) - np.nanmin(data))
+
+    def v_ratio_s(self):
+        return None
 
     def _fit_surface(self, inc, PA, x0=None, y0=None, r_min=None, r_max=None,
                      fit_z1=False, ycut=20.0, **kwargs):
