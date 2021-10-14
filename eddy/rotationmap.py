@@ -54,6 +54,14 @@ class rotationmap(datacube):
         basename = os.path.basename(self.path)
         self.name = os.path.splitext(basename)[0]
 
+        # Attributes for computed values
+        self.v_area_array = None
+        self.v_area_v = None
+        self.v_area_data = None
+
+        self.v_ratio_s_array = None
+        self.v_ratio_s_si = None
+
     # -- FITTING FUNCTIONS -- #
 
     def fit_map(self, p0, params, r_min=None, r_max=None, optimize=True,
@@ -1226,7 +1234,7 @@ class rotationmap(datacube):
         vlsr = np.nanmedian(self.data) if vlsr is None else vlsr
 
         # Max velocity
-        max_v = np.min([np.nanmax(data), -np.nanmin(data)])
+        max_v = np.max([np.nanmax(data), -np.nanmin(data)])
 
 
         if dv == None and nv == None:
@@ -1236,15 +1244,36 @@ class rotationmap(datacube):
             nv = int(max_v/dv)
 
         # Velocity samples
-        v = np.linspace(0.0, max_v, nv)
+        v = np.linspace(0.0, max_v - max_v/nv, nv)
 
-        v_area_data = ((np.sum(np.where(data > v, 1, 0)) - np.sum(np.where(-data > v, 1, 0)))/
-                    (np.sum(np.where(-data > v, 1, 0)) + np.sum(np.where(data > v, 1, 0))))
+        v_area_data = []
+        for vk in v:
+            tmp_va = ((np.sum(np.where(data > vk, 1, 0)) - np.sum(np.where(-data > vk, 1, 0)))/
+                        (np.sum(np.where(-data > vk, 1, 0)) + np.sum(np.where(data > vk, 1, 0))))
 
-        return v_area_data, v
+            v_area_data.append(tmp_va)
+
+        self.v_area_array = np.array(v_area_data)
+        self.v_area_v = v
+        self.v_area_data = data
+
+        return self.v_area_array, self.v_area_v
+
+
+    def sigma_va_sq(self):
+        if type(self.v_area_array) == type(None):
+            raise ValueError("Must call v_area before sigma_va_sq.")
+        sigma = 0
+        n_pix = np.sum(np.where(np.abs(self.v_area_data) > 0, 1, 0))
+        n_beam = np.pi * self.header['BMAJ'] * self.header['BMIN'] / self.header['CDELT2'] ** 2
+        for i, vi in enumerate(self.v_area_v):
+            n_i = np.sum(np.where(np.abs(self.v_area_data) >= vi, 1, 0))
+            sigma += n_i/(n_beam + n_i) * self.v_area_array[i]**2
+
+        return 1/len(self.v_area_v) * sigma
 
     def v_ratio(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=None, r_max=None,
-                    r_min=0.0, smooth=False, mask=None):
+                    r_min=0.0, smooth=False, mask=None, return_max_min=False):
         """
         The ratio between the maximum and minimum values in the velocity map.
         Computed using ``(max(data) + min(data))/(max(data) - min(data))``.
@@ -1290,8 +1319,12 @@ class rotationmap(datacube):
         vlsr = np.nanmedian(data) if vlsr is None else vlsr
 
         data = self.data.copy() * mask
-        return ((np.nanmax(data) + np.nanmin(data))/
-                  (np.nanmax(data) - np.nanmin(data)))
+
+        if return_max_min:
+            return np.nanmax(data), np.nanmin(data)
+        else:
+            return ((np.nanmax(data) + np.nanmin(data))/
+                      (np.nanmax(data) - np.nanmin(data)))
 
     def v_ratio_s(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=None, r_max=None,
                     r_min=0.0, smooth=False, mask=None):
@@ -1327,14 +1360,16 @@ class rotationmap(datacube):
         array, array: Arrays of ``v_ratio`` and ``s``, which are the
             normalised velocity ratio as a function of position along
             the node of velocity maxima along the major axis of the disk, and
-            the path .
+            the path this function is defined along.
         """
 
         # Default r_max.
         r_max = 0.5 * self.xaxis.max() if r_max is None else r_max
 
         if mask == None:
-            mask = self.get_mask(r_min=r_min, r_max=r_max, x0=x0,
+            # Make the mask slightly bigger than needed to take into account
+            # uncertainties in rotating the mask
+            mask = self.get_mask(r_min=r_min, r_max=(r_max + 0.2*r_max), x0=x0,
                          y0=y0, inc=inc, PA=PA)
 
         # Get the data
@@ -1350,17 +1385,34 @@ class rotationmap(datacube):
         data = self._rotate_image(PA=PA, data=data, save=False)
 
         # replace small numbers with nans since scipy.ndimage.shift and rotate can't handle nans ...
-        small_number = 1e-8
+        small_number = 1e-12
         data = np.where(np.abs(data) > small_number, data, np.nan)
 
-        # Need to reobtain and apply the mask...
-        mask = self.get_mask(r_min=r_min, r_max=r_max, x0=0.0,
-                     y0=0.0, inc=inc, PA=90.0)
+        # Need to reobtain and apply the mask using correct r_max, gets rid of
+        # small_number points
+        mask = self.get_mask(r_min=r_min, r_max=r_max, x0=x0,
+                     y0=x0, inc=inc, PA=90.0)
         data[~mask] = None
 
         # Get the coordinates along the x and y axis
         x_coords = []
         y_coords = []
+
+        # beam_radius = self.header['BMAJ'] * 3600
+        #
+        # for i, y_row in enumerate(data.T):
+        #     if np.abs(self.xaxis[i] - x0) > beam_radius:
+        #         try:
+        #             index = np.nanargmax(np.abs(y_row))
+        #             x_coord = i
+        #             y_coord = index
+        #             x_coords.append(x_coord)
+        #             y_coords.append(y_coord)
+        #         except ValueError:
+        #             pass
+        #     else:
+        #         pass
+
 
         for i, y_row in enumerate(data.T):
             try:
@@ -1372,48 +1424,79 @@ class rotationmap(datacube):
             except ValueError:
                 pass
 
-        # plt.imshow(data/1e3, origin='lower', cmap='RdBu', extent=extent, vmin=-3, vmax=3)
-        # plt.plot(self.xaxis[x_coords], self.yaxis[y_coords], color='k')
-        # plt.xlim([-4.5, 4.5])
-        # plt.ylim([-4.5, 4.5])
-        # plt.show()
-
         min_index = np.argmin(abs(np.array(x_coords) - int(len(data[:, 0])/2)))
-        # print(min_index, len(x_coords))
-        # print(x_coords)
-        if np.mean(data[:min_index, :]) > 0:
-            s_px = x_coords[:min_index]
-            s_py = y_coords[:min_index]
 
-            s_mx = x_coords[min_index:]
-            s_my = y_coords[min_index:]
-            v_arr = []
-            for i in range(min([len(s_px), len(s_mx)])):
-                v_arr.append((data[s_py[-(i+1)], s_px[-(i+1)]] + data[s_my[i], s_mx[i]])/(data[s_py[-(i+1)], s_px[-(i+1)]] - data[s_my[i], s_mx[i]]))
-        else:
+        # Declare arrays that will be used
+        v_arr = []
+        s_mx_tmp = []
+        s_my_tmp = []
+
+        s_px_tmp = []
+        s_py_tmp = []
+
+        if np.mean(data[:min_index, :]) > 0:
+            # If the mean is greater than 0, we are on the blueshifted side.
             s_mx = x_coords[:min_index]
             s_my = y_coords[:min_index]
 
             s_px = x_coords[min_index:]
             s_py = y_coords[min_index:]
 
-            v_arr = []
             for i in range(min([len(s_px), len(s_mx)])):
-                # print(data[s_py[i], s_px[i]])
-                v_arr.append((data[s_py[i], s_px[i]] + data[s_my[-(i+1)], s_mx[-(i+1)]])/(data[s_py[i], s_px[i]] - data[s_my[-(i+1)], s_mx[-(i+1)]]))
-            # v_arr.append((data[s_px[i], s_py[i]] + data[s_mx[i], s_my[i]])/(data[s_px[i], s_py[i]] - data[s_mx[i], s_my[i]]))
-        # print(s_px, s_mx)
-        # print(len(s_px), len(s_mx))
+                pos_point = data[s_py[-(i+1)], s_px[-(i+1)]]
+                minus_point = data[s_my[i], s_mx[i]]
+                if pos_point > 0 and minus_point < 0:
+                    v_arr.append((pos_point + minus_point)/(pos_point - minus_point))
+
+                    s_px_tmp.append(s_px[-(i+1)])
+                    s_py_tmp.append(s_py[-(i+1)])
+                    s_mx_tmp.append(s_mx[i])
+                    s_my_tmp.append(s_my[i])
+
+        else:
+            s_px = x_coords[:min_index]
+            s_py = y_coords[:min_index]
+
+            s_mx = x_coords[min_index:]
+            s_my = y_coords[min_index:]
+
+            for i in range(min([len(s_px), len(s_mx)])):
+                pos_point = data[s_py[i], s_px[i]]
+                minus_point = data[s_my[-(i+1)], s_mx[-(i+1)]]
+                if pos_point > 0 and minus_point < 0:
+                    v_arr.append((pos_point + minus_point)/(pos_point - minus_point))
+
+                    s_px_tmp.append(s_px[i])
+                    s_py_tmp.append(s_py[i])
+                    s_mx_tmp.append(s_mx[-(i+1)])
+                    s_my_tmp.append(s_my[-(i+1)])
+
+        s_mx = np.array(s_mx_tmp)
+        s_my = np.array(s_my_tmp)
+        s_px = np.array(s_px_tmp)
+        s_py = np.array(s_py_tmp)
+
+        self.v_ratio_s_array = np.flip(np.array(v_arr))
 
         if len(s_px) >= len(s_mx):
             max_s = np.max(np.abs(s_mx))
             min_s = np.min(np.abs(s_mx))
-            return np.array(v_arr), np.linspace(max_s, min_s, len(s_mx))
+            indices = np.arange(min_s, max_s+1) #, len(s_mx))
+            self.v_ratio_s_si = np.array(self.xaxis)[indices[:]]
 
         else:
             max_s = np.max(np.abs(s_px))
             min_s = np.min(np.abs(s_px))
-            return np.array(v_arr), np.linspace(max_s, min_s, len(s_px))
+            indices = np.arange(min_s, max_s+1) #, len(s_px))
+            self.v_ratio_s_si = np.array(self.xaxis)[indices[:]]
+
+        return self.v_ratio_s_array, np.abs(self.v_ratio_s_si)
+
+    def sigma_vpv_sq(self):
+        if type(self.v_ratio_s_array) == type(None):
+            raise ValueError("Must call v_ratio_s before sigma_vpv_sq.")
+        vpv = self.v_ratio_s_array
+        return 1/len(vpv) * np.sum(vpv**2)
 
     # -- Functions to help determine the emission height. -- #
 
