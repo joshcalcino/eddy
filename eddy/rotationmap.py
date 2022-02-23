@@ -12,6 +12,7 @@ import warnings
 import os
 import pickle
 from astropy.io import fits
+from copy import deepcopy
 
 warnings.filterwarnings("ignore")
 
@@ -45,8 +46,22 @@ class rotationmap(datacube):
         datacube.__init__(self, path=path, FOV=FOV, fill=None)
         self.mask = np.isfinite(self.data)
         self._readuncertainty(uncertainty=uncertainty, FOV=FOV)
-        if downsample is not None:
+
+        self.downsample = downsample
+
+        self.original_xaxis = None
+        self.original_yaxis = None
+        self.original_data = None
+
+        if self.downsample is not None:
+            # Deepcopy original data for later use
+            self.original_xaxis = deepcopy(self.xaxis)
+            self.original_yaxis = deepcopy(self.yaxis)
+            self.original_data = deepcopy(self.data)
+
+            # Now downsample the cube
             self.downsample_cube(downsample)
+
         self.vlsr = np.nanmedian(self.data)
         self.vlsr_kms = self.vlsr / 1e3
         self._set_default_priors()
@@ -68,7 +83,8 @@ class rotationmap(datacube):
                 nwalkers=None, nburnin=300, nsteps=100, scatter=1e-3,
                 plots=None, savefigs=False, savemodels=False,
                 returns=None, pool=None, mcmc='emcee',
-                mcmc_kwargs=None, imshow_kwargs=None, niter=1):
+                mcmc_kwargs=None, imshow_kwargs=None,
+                downsample_plots=True, niter=1):
         """
         Fit a rotation profile to the data. Note that for a disk with
         a non-zero height, the sign of the inclination dictates the direction
@@ -215,9 +231,7 @@ class rotationmap(datacube):
             samples = sampler.get_chain(discard=nburnin[-1], flat=True)
             p0 = np.median(samples, axis=0)
             medians = rotationmap._populate_dictionary(p0, params.copy())
-            print(medians)
             medians = self.verify_params_dictionary(medians)
-            print(medians)
 
             self.median_params = medians
 
@@ -253,14 +267,16 @@ class rotationmap(datacube):
                             mask=self.ivar,
                             draws=10,
                             imshow_kwargs=imshow_kwargs,
-                            savename=savename)
+                            savename=savename,
+                            downsample=downsample_plots)
         if 'residual' in plots:
             self.plot_model_residual(samples=samples,
                                      params=params,
                                      mask=self.ivar,
                                      draws=10,
                                      imshow_kwargs=imshow_kwargs,
-                                     savename=savename)
+                                     savename=savename,
+                                     downsample=downsample_plots)
 
         # Generate the output.
 
@@ -1007,21 +1023,42 @@ class rotationmap(datacube):
             filename = self.path.replace('.fits', '_model.fits')
         fits.writeto(filename, model, self.header, overwrite=overwrite)
 
-    def save_residuals(self, samples=None, params=None, model=None, filename=None,
-                   overwrite=True):
+    def save_residuals(self, params, samples=None, model=None, draws=None, filename=None,
+                   overwrite=True, downsample=False):
         """
         Save the residuals as a FITS file.
         """
-        if model is None:
-            # model = np.squeeze(fits.getdata(self.path)) * 1e3 - self.evaluate_models(samples, params)
-            model = self.data * 1e3 - self.evaluate_models(samples, params)
-        if self.header['naxis1'] > self.nypix:
-            canvas = np.ones(self._original_shape) * np.nan
-            canvas[self._ya:self._yb, self._xa:self._xb] = model
-            model = canvas.copy()
+
+        header = self.header
+
+        residuals = self.get_residuals(params, samples=samples, model=model,
+                                                draws=draws, downsample=downsample)
+
         if filename is None:
             filename = self.path.replace('.fits', '_residuals.fits')
-        fits.writeto(filename, model, self.header, overwrite=overwrite)
+
+        fits.writeto(filename, residuals, header, overwrite=overwrite)
+
+    def get_residuals(self, params, samples=None, model=None, draws=None, downsample=False):
+        if model == None:
+            if (downsample or self.downsample == None):
+                if samples is None:
+                    model = self._make_model(params)
+                else:
+                    model = self.evaluate_models(params=params, samples=samples, draws=draws)
+
+                residuals = self.data - model
+            else: # no downsample
+                self._update_data_attributes()
+                if samples is None:
+                    model = self._make_model(params)
+                else:
+                    model = self.evaluate_models(params=params, samples=samples, draws=draws)
+                residuals = deepcopy(self.data) - model
+                self._reset_data_attributes()
+
+        return residuals
+
 
     def save_params(self, params, name=None):
         if name == None:
@@ -1036,6 +1073,24 @@ class rotationmap(datacube):
                 params_to_save[key] = params[key]
 
         pickle.dump(params_to_save, open(savename, 'wb'))
+
+    def _update_data_attributes(self):
+        """ Update the data attributes for saving full model. """
+        self.downsample_data = deepcopy(self.data)
+        self.downsample_xaxis = deepcopy(self.xaxis)
+        self.downsample_yaxis = deepcopy(self.yaxis)
+
+        self.data = self.original_data
+        self.data.shape = np.shape(self.original_data)
+        self.xaxis = self.original_xaxis
+        self.yaxis = self.original_yaxis
+
+    def _reset_data_attributes(self):
+        """ Reset the data attributes. """
+
+        self.data = deepcopy(self.downsample_data)
+        self.xaxis = deepcopy(self.downsample_xaxis)
+        self.yaxis = deepcopy(self.downsample_yaxis)
 
     def mirror_residual(self, samples, params, mirror_velocity_residual=True,
                         mirror_axis='minor', return_deprojected=False,
@@ -1232,6 +1287,7 @@ class rotationmap(datacube):
 
         # Default vlsr.
         vlsr = np.nanmedian(self.data) if vlsr is None else vlsr
+        data = data - vlsr
 
         # Max velocity
         max_v = np.max([np.nanmax(data), -np.nanmin(data)])
@@ -1248,8 +1304,19 @@ class rotationmap(datacube):
 
         v_area_data = []
         for vk in v:
+            # print(vk)
             tmp_va = ((np.sum(np.where(data > vk, 1, 0)) - np.sum(np.where(-data > vk, 1, 0)))/
                         (np.sum(np.where(-data > vk, 1, 0)) + np.sum(np.where(data > vk, 1, 0))))
+
+            # plt.figure()
+            # plt.imshow(np.where(data > vk, 1, 0))
+            # plt.figure()
+            # plt.imshow(np.where(-data > vk, 1, 0))
+            # a = np.sum(np.where(data > vk, 1, 0))
+            # b = np.sum(np.where(-data > vk, 1, 0))
+            # print(a, b, a/b)
+            # plt.show()
+
 
             v_area_data.append(tmp_va)
 
@@ -1327,7 +1394,7 @@ class rotationmap(datacube):
                       (np.nanmax(data) - np.nanmin(data)))
 
     def v_ratio_s(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=None, r_max=None,
-                    r_min=0.0, smooth=False, mask=None):
+                    r_min=0.0, dv=0.0, smooth=False, mask=None):
         """
         The ratio between the maximum and minimum values in the velocity map
         along the node of velocity maxima along the major axis of the disk.
@@ -1345,8 +1412,6 @@ class rotationmap(datacube):
             r_min (Optional[float]): Minimum offset to consider in [arcsec].
                 The default (and recommended) value is 0.
             dv (Optional[float]): The spacing between velocity samples.
-            nv (Optional[float]): The number of velocity samples between 0
-                                    and a maximum velocity.
             smooth (Optional[bool/float]): Smooth the line of nodes. If
                 ``True``, smooth with the beam kernel, otherwise ``smooth``
                 describes the FWHM of the Gaussian convolution kernel in
@@ -1371,6 +1436,8 @@ class rotationmap(datacube):
             # uncertainties in rotating the mask
             mask = self.get_mask(r_min=r_min, r_max=(r_max + 0.2*r_max), x0=x0,
                          y0=y0, inc=inc, PA=PA)
+
+        dv = 100.0
 
         # Get the data
         data = self.data.copy() * mask
@@ -1424,7 +1491,31 @@ class rotationmap(datacube):
             except ValueError:
                 pass
 
+        # Get the coordinates along the x and y axis
+        x_coords = []
+        y_coords = []
+        pos_y_coords = []
+        min_y_coords = []
+
+        for i, y_row in enumerate(data.T):
+            try:
+                pos_index = np.nanargmax(y_row)
+                min_index = np.nanargmin(y_row)
+                x_coord = i
+                x_coords.append(x_coord)
+                pos_y_coords.append(pos_index)
+                min_y_coords.append(min_index)
+            except ValueError:
+                pass
+
         min_index = np.argmin(abs(np.array(x_coords) - int(len(data[:, 0])/2)))
+        # min_y_index = np.argmin(abs(np.array(y_coords) - int(len(data[0, :])/2)))
+
+        plt.imshow(data, cmap='RdBu', vmin=-5000, vmax=5000, origin='lower')
+        # plt.scatter(min_index, min_y_index, color='k')
+        # plt.show()
+
+        pixel_buffer = 20
 
         # Declare arrays that will be used
         v_arr = []
@@ -1434,59 +1525,90 @@ class rotationmap(datacube):
         s_px_tmp = []
         s_py_tmp = []
 
-        if np.mean(data[:min_index, :]) > 0:
-            # If the mean is greater than 0, we are on the blueshifted side.
-            s_mx = x_coords[:min_index]
-            s_my = y_coords[:min_index]
+        pos_points = []
+        minus_points = []
 
-            s_px = x_coords[min_index:]
-            s_py = y_coords[min_index:]
+        if np.median(data[:min_index, :]) > 0:
+            # If the median is greater than 0, we are on the redshifted side.
+            s_mx = x_coords[:min_index+pixel_buffer]
+            s_my = min_y_coords[:min_index+pixel_buffer]
+
+            s_px = x_coords[min_index-pixel_buffer:]
+            s_py = pos_y_coords[min_index-pixel_buffer:]
 
             for i in range(min([len(s_px), len(s_mx)])):
-                pos_point = data[s_py[-(i+1)], s_px[-(i+1)]]
-                minus_point = data[s_my[i], s_mx[i]]
-                if pos_point > 0 and minus_point < 0:
-                    v_arr.append((pos_point + minus_point)/(pos_point - minus_point))
+                # print(-(i+1), -(i+1))
+                # print(s_py[-(i+1)], s_px[-(i+1)])
+                pos_points.append(data[s_py[-(i+1)], s_px[-(i+1)]])
+                minus_points.append(data[s_my[i], s_mx[i]])
 
-                    s_px_tmp.append(s_px[-(i+1)])
-                    s_py_tmp.append(s_py[-(i+1)])
-                    s_mx_tmp.append(s_mx[i])
-                    s_my_tmp.append(s_my[i])
+                s_px_tmp.append(s_px[-(i+1)])
+                s_py_tmp.append(s_py[-(i+1)])
+                s_mx_tmp.append(s_mx[i])
+                s_my_tmp.append(s_my[i])
 
         else:
-            s_px = x_coords[:min_index]
-            s_py = y_coords[:min_index]
+            s_px = x_coords[:min_index+pixel_buffer]
+            s_py = pos_y_coords[:min_index+pixel_buffer]
 
-            s_mx = x_coords[min_index:]
-            s_my = y_coords[min_index:]
+            s_mx = x_coords[min_index-pixel_buffer:]
+            s_my = min_y_coords[min_index-pixel_buffer:]
 
             for i in range(min([len(s_px), len(s_mx)])):
-                pos_point = data[s_py[i], s_px[i]]
-                minus_point = data[s_my[-(i+1)], s_mx[-(i+1)]]
-                if pos_point > 0 and minus_point < 0:
-                    v_arr.append((pos_point + minus_point)/(pos_point - minus_point))
+                # print(-(i+1), -(i+1))
+                # print(s_py[-(i+1)], s_px[-(i+1)])
+                pos_points.append(data[s_py[i], s_px[i]])
+                minus_points.append(data[s_my[-(i+1)], s_mx[-(i+1)]])
 
-                    s_px_tmp.append(s_px[i])
-                    s_py_tmp.append(s_py[i])
-                    s_mx_tmp.append(s_mx[-(i+1)])
-                    s_my_tmp.append(s_my[-(i+1)])
+                s_px_tmp.append(s_px[i])
+                s_py_tmp.append(s_py[i])
+                s_mx_tmp.append(s_mx[-(i+1)])
+                s_my_tmp.append(s_my[-(i+1)])
 
         s_mx = np.array(s_mx_tmp)
         s_my = np.array(s_my_tmp)
         s_px = np.array(s_px_tmp)
         s_py = np.array(s_py_tmp)
 
+
+        # Clean up the lines to get rid of wrong sign values
+
+        minus_points = np.array(minus_points)
+        pos_points = np.array(pos_points)
+
+        plt.plot(s_mx, s_my, color='g')
+        plt.plot(s_px, s_py, color='m')
+        plt.show()
+        dv = 100
+
+        s_mx = s_mx[minus_points<-dv]
+        s_my = s_my[minus_points<-dv]
+        s_px = s_px[pos_points>dv]
+        s_py = s_py[pos_points>dv]
+
+        pos_points = pos_points[pos_points>dv]
+        minus_points = minus_points[minus_points<-dv]
+
+        for i in range(min([len(s_px), len(s_mx)])):
+            v_arr.append((pos_points[i] + minus_points[i])/(pos_points[i] - minus_points[i]))
+
+        plt.plot(s_mx, s_my, color='g')
+        plt.plot(s_px, s_py, color='m')
+        plt.show()
+
         self.v_ratio_s_array = np.flip(np.array(v_arr))
+
+        min_s = 0
 
         if len(s_px) >= len(s_mx):
             max_s = np.max(np.abs(s_mx))
-            min_s = np.min(np.abs(s_mx))
+            # min_s = np.min(np.abs(s_mx))
             indices = np.arange(min_s, max_s+1) #, len(s_mx))
             self.v_ratio_s_si = np.array(self.xaxis)[indices[:]]
 
         else:
             max_s = np.max(np.abs(s_px))
-            min_s = np.min(np.abs(s_px))
+            # min_s = np.min(np.abs(s_px))
             indices = np.arange(min_s, max_s+1) #, len(s_px))
             self.v_ratio_s_si = np.array(self.xaxis)[indices[:]]
 
@@ -1839,7 +1961,7 @@ class rotationmap(datacube):
 
     def plot_model(self, samples=None, params=None, model=None, draws=0.5,
                    mask=None, ax=None, imshow_kwargs=None, cb_label=None,
-                   return_fig=False, savename=None):
+                   return_fig=False, savename=None, downsample=True):
         """
         Plot a v0 model using the same scalings as the plot_data() function.
 
@@ -1915,7 +2037,7 @@ class rotationmap(datacube):
 
     def plot_model_residual(self, samples=None, params=None, model=None,
                             draws=0.5, mask=None, ax=None, imshow_kwargs=None,
-                            return_fig=False, savename=None):
+                            return_fig=False, savename=None, downsample=True):
         """
         Plot the residual from the provided model.
 
@@ -1947,13 +2069,18 @@ class rotationmap(datacube):
 
         # Make the model and calculate the plotting limits.
 
-        if model is None:
-            model = self.evaluate_models(samples, params.copy(), draws=draws)
-        vres = self.data - model
+        # if model is None:
+        #     model = self.evaluate_models(samples, params.copy(), draws=draws)
+        # vres = self.data - model
+        vres = self.get_residuals(params.copy(), samples=samples, model=model,
+                                draws=draws, downsample=downsample)
+        # plt.imshow(vres)
+        # plt.show()
         mask = np.ones(vres.shape) if mask is None else mask
         masked_vres = np.where(mask, vres, np.nan)
         vmin, vmax = np.nanpercentile(masked_vres, [2, 98])
         vmax = max(abs(vmin), abs(vmax))
+        print(vmax)
 
         # Plot the data.
 
