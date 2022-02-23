@@ -41,9 +41,11 @@ class rotationmap(datacube):
     """
 
     priors = {}
+    SHO_priors = {}
 
     def __init__(self, path, FOV=None, uncertainty=None, downsample=None):
         datacube.__init__(self, path=path, FOV=FOV, fill=None)
+        self.data *= 1e3 if self.header['bunit'].lower() == 'km/s' else 1.0
         self.mask = np.isfinite(self.data)
         self._readuncertainty(uncertainty=uncertainty, FOV=FOV)
 
@@ -308,13 +310,13 @@ class rotationmap(datacube):
         return to_return if len(to_return) > 1 else to_return[0]
 
     def fit_annuli(self, rpnts=None, rbins=None, x0=0.0, y0=0.0, inc=0.0,
-                   PA=0.0, z0=None, psi=None, r_cavity=None, r_taper=None,
+                   PA=0.0, z0=0.0, psi=1.0, r_cavity=None, r_taper=None,
                    q_taper=None, w_i=None, w_r=None, w_t=None, z_func=None,
                    shadowed=False, phi_min=None, phi_max=None,
                    exclude_phi=False, abs_phi=False, mask_frame='disk',
                    user_mask=None, fit_vrot=True, fit_vrad=True,
                    fix_vlsr=False, plots=None, returns=None,
-                   optimize_kwargs=None):
+                   optimize_kwargs=None, MCMC=False):
         r"""
         Splits the map into concentric annuli based on the geometrical
         parameters, then fits each annnulus with a simple harmonic oscillator
@@ -327,6 +329,10 @@ class rotationmap(datacube):
         where the :math:`\pm` arises due to the projection of the radial
         velocity, defined such that positive values are away from the star,
         along the line of sight.
+
+        .. note::
+            If you find negative :math:`v_{\phi}` values then your chosen
+            position angle is likely off by 180 degrees.
 
         Args:
             rpnts
@@ -431,11 +437,18 @@ class rotationmap(datacube):
             # Fit the pixels, and correct the radial velocity to have positive
             # velocities describining motions away from the star.
 
-            popt, cvar = self._fit_SHO(x=x, y=y, dy=dy,
-                                       fit_vrot=fit_vrot,
-                                       fit_vrad=fit_vrad,
-                                       fix_vlsr=fix_vlsr,
-                                       optimize_kwargs=optimize_kwargs)
+            try:
+                popt, cvar = self._fit_SHO(x=x, y=y, dy=dy,
+                                           fit_vrot=fit_vrot,
+                                           fit_vrad=fit_vrad,
+                                           fix_vlsr=fix_vlsr,
+                                           MCMC=MCMC,
+                                           optimize_kwargs=optimize_kwargs)
+            except ValueError:
+                popt = np.ones(nparams) * np.nan
+                fits += [popt]
+                uncertainty += [popt]
+                continue
 
             if fit_vrad and inc >= 0.0:
                 if fit_vrot:
@@ -490,7 +503,23 @@ class rotationmap(datacube):
 
     def _evaluate_annuli_model(self, rpnts, fits, rvals, pvals, fit_vrot=True,
                                fit_vrad=True, fix_vlsr=False):
-        """Evaluate the annuli models. Fits must not be deprojected."""
+        """
+        Evaluate the annuli models onto a 2D map. Fits must not be deprojected.
+
+        Args:
+            rpnts (array): A size M array of radial positions.
+            fits (array): A [NxM] array containing the inferred velocity
+                values where N is the number of velocity components (1, 2, 3).
+            rvals (array): A 2D array of on-sky radial positions in [arcsec].
+            pvals (array): A 2D array of on-sky polar angle in [radians].
+            fit_vrot (Optional[bool]): If v_rot is included in ``fits``.
+            fit_vrad (Optional[bool]): If v_rad is included in ``fits``.
+            fix_vlsr (Optional[bool/float]): If ``False``, v_z is included in
+                ``fits``, otherwise this specifies the fized ``vlsr``.
+
+        Returns:
+            v0
+        """
         from scipy.interpolate import interp1d
         idx = 0
         if fit_vrot:
@@ -510,11 +539,10 @@ class rotationmap(datacube):
         return vrot * np.cos(pvals) + vrad * np.sin(pvals) + vlsr
 
     def _fit_SHO(self, x, y, dy, fit_vrot=True, fit_vrad=True, fix_vlsr=False,
-                 optimize_kwargs=None):
+                 optimize_kwargs=None, MCMC=False):
         """Fit the points with a simple harmonic oscillator."""
 
         from .helper_functions import SHO_double
-        from scipy.optimize import curve_fit
 
         # Guess the starting parameters.
 
@@ -529,47 +557,58 @@ class rotationmap(datacube):
                 def func(x, *params):
                     return SHO_double(x, *params)
                 p0 = [vrot, vrad, vlsr]
-                nparam = 3
+                priors = ['vrot', 'vrad', 'vlsr']
             elif fit_vrot and (not fit_vrad):
                 def func(x, *params):
                     return SHO_double(x, params[0], 0.0, params[-1])
                 p0 = [vrot, vlsr]
-                nparam = 2
+                priors = ['vrot', 'vlsr']
             elif (not fit_vrot) and fit_vrad:
                 def func(x, *params):
-                    return SHO_double(x, params[0], 0.0, params[-1])
-                p0 = [vrot, vlsr]
-                nparam = 2
+                    return SHO_double(x, 0.0, params[0], params[-1])
+                p0 = [vrad, vlsr]
+                priors = ['vrad', 'vlsr']
             else:
                 def func(x, *params):
                     return SHO_double(x, 0.0, 0.0, *params)
                 p0 = [vlsr]
-                nparam = 1
+                priors = ['vlsr']
         else:
             if fit_vrot and fit_vrad:
                 def func(x, *params):
                     return SHO_double(x, *params, fix_vlsr)
                 p0 = [vrot, vrad]
-                nparam = 2
+                priors = ['vrot', 'vrad']
             elif fit_vrot and (not fit_vrad):
                 def func(x, *params):
                     return SHO_double(x, *params, 0.0, fix_vlsr)
                 p0 = [vrot]
-                nparam = 1
+                priors = ['vrot']
             elif (not fit_vrot) and fit_vrad:
                 def func(x, *params):
                     return SHO_double(x, 0.0, *params, fix_vlsr)
                 p0 = [vrad]
-                nparam = 1
+                priors = ['vrad']
             else:
                 raise ValueError("You must fit one parameter!")
 
         # Returns if no values are provided.
 
         if len(y) == 0:
-            popt = np.empty(nparam)
+            popt = np.empty(len(p0))
             cvar = popt.copy()
             return popt, cvar
+
+        # Send values to with curve_fit or emcee.
+
+        if MCMC:
+            return self._SHO_MCMC(x, y, dy, func, p0, priors, optimize_kwargs)
+        else:
+            return self._SHO_chi2(x, y, dy, func, p0, optimize_kwargs)
+
+    def _SHO_chi2(self, x, y, dy, func, p0, optimize_kwargs=None):
+        """Use scipy.optimize.curve_fit for the fitting."""
+        from scipy.optimize import curve_fit
 
         # Set up the optimization.
 
@@ -581,14 +620,76 @@ class rotationmap(datacube):
 
         # Try the fitting. If it fails, just return NaNs.
 
-        #popt, cvar = curve_fit(func, x, y, **kw)
         try:
             popt, cvar = curve_fit(func, x, y, **kw)
             cvar = np.diag(cvar)**0.5
         except (ValueError, TypeError):
-            popt = np.empty(nparam)
+            popt = np.empty(len(p0))
             cvar = popt.copy()
         return popt, cvar
+
+    def _SHO_MCMC(self, x, y, dy, func, p0, priors, optimize_kwargs=None):
+        """Use an MCMC sampler to model the posteriors."""
+
+        # Set up the optimization.
+
+        kw = {} if optimize_kwargs is None else optimize_kwargs
+        if kw.pop('mcmc', 'emcee') == 'zeus':
+            EnsembleSampler = zeus.EnsembleSampler
+        else:
+            EnsembleSampler = emcee.EnsembleSampler
+        nwalkers = kw.pop('nwalkers', 128)
+        nburnin = kw.pop('nburnin', 200)
+        nsteps = kw.pop('nsteps', 100)
+        scatter = kw.pop('scatter', 1e-3)
+        progress = kw.pop('progress', True)
+        moves = kw.pop('moves', None)
+        pool = kw.pop('pool', None)
+
+        # Check that the starting positions are OK. If not, return NaN.
+        # TODO: Check how to handle this in the model making.
+
+        if not np.isfinite(np.sum([rotationmap.SHO_priors[p](t)
+                                   for t, p in zip(p0, priors)])):
+            return [np.nan for _ in p0], [np.nan for _ in p0]
+
+        # Run the EnsembleSampler
+
+        p0 = random_p0(p0, scatter, nwalkers)
+        sampler = EnsembleSampler(nwalkers,
+                                  p0.shape[1],
+                                  self._SHO_ln_probability,
+                                  args=[func, priors, x, y, dy],
+                                  moves=moves,
+                                  pool=pool)
+        sampler.run_mcmc(p0, nburnin + nsteps, progress=progress, **kw)
+
+        # Extract the median and (symmetric) uncertainties.
+
+        samples = sampler.get_chain(discard=nburnin, flat=True)
+        samples = np.percentile(samples, [16, 50, 84], axis=0)
+        return samples[1], 0.5 * (samples[2] - samples[0])
+
+    def _SHO_ln_probability(self, theta, func, priors, x, y, dy):
+        """Log-probablility function."""
+        lnp = self._SHO_ln_prior(theta, priors)
+        if np.isfinite(lnp):
+            return lnp + self._SHO_ln_likelihood(theta, func, x, y, dy)
+        return -np.inf
+
+    def _SHO_ln_prior(self, theta, priors):
+        """Priors for the MCMC fitting of the annuli."""
+        lnp = 0.0
+        for t, p in zip(theta, priors):
+            lnp += rotationmap.SHO_priors[p](t)
+            if not np.isfinite(lnp):
+                return lnp
+        return lnp
+
+    def _SHO_ln_likelihood(self, theta, func, x, y, dy):
+        """Log-likelihood for the MCMC fitting of the annuli."""
+        lnx2 = -0.5 * np.sum(np.power((y - func(x, *theta)) / dy, 2))
+        return lnx2 if np.isfinite(lnx2) else -np.inf
 
     def _get_radial_bins(self, rpnts=None, rbins=None):
         """Return default radial bins."""
@@ -628,6 +729,32 @@ class rotationmap(datacube):
             def prior(p):
                 return -0.5 * ((args[0] - p) / args[1])**2
         rotationmap.priors[param] = prior
+
+    def set_SHO_prior(self, param, args, type='flat'):
+        """
+        Set the prior for the given parameter for the SHO fitting. There are
+        two types of priors currently usable, ``'flat'`` which requires
+        ``args=[min, max]`` while for ``'gaussian'`` you need to specify
+        ``args=[mu, sig]``. The three ``params`` which are available are
+        ``'vrot'``, ``'vrad'`` and ``'vlsr'``.
+
+        Args:
+            param (str): Name of the parameter.
+            args (list): Values to use depending on the type of prior.
+            type (optional[str]): Type of prior to use.
+        """
+        type = type.lower()
+        if type not in ['flat', 'gaussian']:
+            raise ValueError("type must be 'flat' or 'gaussian'.")
+        if type == 'flat':
+            def prior(p):
+                if not min(args) <= p <= max(args):
+                    return -np.inf
+                return np.log(1.0 / (args[1] - args[0]))
+        else:
+            def prior(p):
+                return -0.5 * ((args[0] - p) / args[1])**2
+        rotationmap.SHO_priors[param] = prior
 
     def plot_data(self, vmin=None, vmax=None, ivar=None, return_fig=False):
         """
@@ -756,7 +883,7 @@ class rotationmap(datacube):
         self.set_prior('psi', [0.0, 5.0], 'flat')
         self.set_prior('r_cavity', [0.0, 1e30], 'flat')
         self.set_prior('r_taper', [0.0, 1e30], 'flat')
-        self.set_prior('q_taper', [0.0, 5.0], 'flat')
+        self.set_prior('q_taper', [0.0, 15.0], 'flat')
 
         # Warp
 
@@ -772,6 +899,14 @@ class rotationmap(datacube):
         self.set_prior('vp_qtaper', [0.0, 5.0], 'flat')
         self.set_prior('vr_100', [-1e3, 1e3], 'flat')
         self.set_prior('vr_q', [-2.0, 2.0], 'flat')
+        self.set_prior('r_pressure', [0.0, 3.0*self.xaxis.max()], 'flat')
+        self.set_prior('w_pressure', [0.0, 1e2], 'flat')
+
+        # SHO functions.
+
+        self.set_SHO_prior('vrot', [-3e3, 3e3], 'flat')
+        self.set_SHO_prior('vrad', [-1e2, 1e2], 'flat')
+        self.set_SHO_prior('vlsr', [-1e4, 1e4], 'flat')
 
     def _ln_prior(self, params):
         """Log-priors."""
@@ -872,26 +1007,47 @@ class rotationmap(datacube):
 
         # Rotation profile.
 
-        has_vp_100 = False if params.get('vp_100') is None else True
-        has_mstar = False if params.get('mstar') is None else True
-        if has_mstar and has_vp_100:
-            raise KeyError("Only provide either `'mstar'` or `'vp_100'`.")
-        if not has_mstar and not has_vp_100:
-            raise KeyError("Must provide either `'mstar'` or `'vp_100'`.")
-        if has_mstar:
-            params['vfunc'] = self._proj_vkep
+        if params.get('r_pressure') is None:
+            params['has_pressure'] = False
         else:
-            params['vfunc'] = self._proj_vpow
+            params['has_pressure'] = True
+
+        if params.get('vp_100') is None:
+            params['has_vp_100'] = False
+        else:
+            params['has_vp_100'] = True
+
+        if params.get('mstar') is None:
+            params['has_mstar'] = False
+        else:
+            params['has_mstar'] = True
+
+        if params['has_mstar'] and params['has_vp_100']:
+            raise KeyError("Only provide either `'mstar'` or `'vp_100'`.")
+        if not params['has_mstar'] and not params['has_vp_100']:
+            raise KeyError("Must provide either `'mstar'` or `'vp_100'`.")
+        if params['has_mstar']:
+            if params['has_pressure']:
+                params['vfunc'] = self._vkep_pressure
+            else:
+                params['vfunc'] = self._vkep
+        else:
+            if params['has_pressure']:
+                params['vfunc'] = self._vpow_pressure
+            else:
+                params['vfunc'] = self._vpow
+
         params['vp_q'] = params.pop('vp_q', -0.5)
         params['vp_rtaper'] = params.pop('vp_rtaper', 1e10)
         params['vp_qtaper'] = params.pop('vp_qtaper', 1.0)
         params['vr_100'] = params.pop('vr_100', 0.0)
         params['vr_q'] = params.pop('vr_q', 0.0)
+        params['w_pressure'] = params.pop('w_pressure', 0.0)
 
         # Flared emission surface.
 
-        params['z0'] = params.pop('z0', None)
-        params['psi'] = params.pop('psi', None)
+        params['z0'] = params.pop('z0', 0.0)
+        params['psi'] = params.pop('psi', 1.0)
         params['r_taper'] = params.pop('r_taper', None)
         params['q_taper'] = params.pop('q_taper', None)
         params['r_cavity'] = params.pop('r_cavity', None)
@@ -900,7 +1056,7 @@ class rotationmap(datacube):
         # Warp parameters.
 
         params['w_i'] = params.pop('w_i', 0.0)
-        params['w_r'] = params.pop('w_r', 0.5 * max(self.xaxis))
+        params['w_r'] = params.pop('w_r', 0.0)
         params['w_t'] = params.pop('w_t', 0.0)
         params['shadowed'] = params.pop('shadowed', False)
 
@@ -933,7 +1089,8 @@ class rotationmap(datacube):
 
 
     def evaluate_models(self, samples=None, params=None, draws=0.5,
-                        collapse_func=np.mean, coords_only=False):
+                        collapse_func=np.mean, coords_only=False,
+                        profile_only=False):
         """
         Evaluate models based on the samples provided and the parameter
         dictionary. If ``draws`` is an integer, it represents the number of
@@ -954,6 +1111,8 @@ class rotationmap(datacube):
                 argument (as with most Numpy functions).
             coords_only (Optional[bool]): Return the deprojected coordinates
                 rather than the v0 model. Default is False.
+            profile_only (Optional[bool]): Return the radial profiles of the
+                velocity profiles rather than the v0 model. Default is False.
 
         Returns:
             model (ndarray): The sampled model, either the v0 model, or, if
@@ -973,7 +1132,10 @@ class rotationmap(datacube):
             if coords_only:
                 return self.disk_coords(**verified_params)
             else:
-                return self._make_model(verified_params)
+                if profile_only:
+                    return self._make_profile(verified_params)
+                else:
+                    return self._make_model(verified_params)
 
         nparam = np.sum([type(params[k]) is int for k in params.keys()])
         if samples.shape[1] != nparam:
@@ -986,14 +1148,20 @@ class rotationmap(datacube):
         # Avearge over a random draw of models.
 
         if isinstance(int(draws) if draws > 1.0 else draws, int):
-            models = []
+            rvals, models = [], []
             for idx in np.random.randint(0, samples.shape[0], draws):
                 tmp = self._populate_dictionary(samples[idx], verified_params)
                 if coords_only:
                     models += [self.disk_coords(**tmp)]
+                elif profile_only:
+                    _rval, _model = self._make_profile(tmp)
+                    rvals += [_rval]
+                    models += [_model]
                 else:
                     models += [self._make_model(tmp)]
-            return collapse_func(models, axis=0)
+            rvals = collapse_func(rvals, axis=0)
+            models = collapse_func(models, axis=0)
+            return (rvals, models) if profile_only else models
 
         # Take a percentile of the samples.
 
@@ -1002,6 +1170,8 @@ class rotationmap(datacube):
             tmp = self._populate_dictionary(tmp, verified_params)
             if coords_only:
                 return self.disk_coords(**tmp)
+            elif profile_only:
+                return self._make_profile(tmp)
             else:
                 return self._make_model(tmp)
 
@@ -1011,7 +1181,8 @@ class rotationmap(datacube):
     def save_model(self, samples=None, params=None, model=None, filename=None,
                    overwrite=True):
         """
-        Save the model as a FITS file.
+        Save the model as a FITS file. If you have used ``downsample`` when
+        loading the cube data, _this will not work_.
         """
         if model is None:
             model = self.evaluate_models(samples, params)
@@ -1179,28 +1350,45 @@ class rotationmap(datacube):
 
     # -- VELOCITY PROJECTION -- #
 
-    def _v0(self, params):
-        """Projected velocity structre."""
-        rvals, tvals, zvals = self.disk_coords(**params)
-        v0 = params['vfunc'](rvals, tvals, zvals, params)
-        return v0 + params['vlsr']
+    def _vkep(self, rvals, tvals, zvals, params):
+        """Keplerian rotation velocity."""
+        r_m = rvals * sc.au * params['dist']
+        z_m = zvals * sc.au * params['dist']
+        vkep = sc.G * params['mstar'] * self.msun * np.power(r_m, 2)
+        return np.sqrt(vkep * np.power(np.hypot(r_m, z_m), -3))
 
-    def _proj_vkep(self, rvals, tvals, zvals, params):
-        """Projected Keplerian rotational velocity profile."""
-        rvals *= sc.au * params['dist']
-        zvals *= sc.au * params['dist']
-        v_phi = sc.G * params['mstar'] * self.msun * np.power(rvals, 2)
-        v_phi = np.sqrt(v_phi * np.power(np.hypot(rvals, zvals), -3))
-        return self._proj_vphi(v_phi, tvals, params)
+    def _vkep_pressure(self, rvals, tvals, zvals, params):
+        """Keplerian rotation velocity with pressure term."""
+        vkep = self._vkep(rvals, tvals, zvals, params)
+        r_p = params['r_pressure']
+        idx = np.unravel_index(abs(rvals - r_p).argmin(), rvals.shape)
+        dvprs = (1.0 - 1.5 * r_p**2 / (r_p**2 + zvals[idx]**2))
+        dvprs = ((rvals - r_p) / r_p) * dvprs + 1.0
+        vkep = np.where(rvals <= r_p, vkep, vkep[idx] * dvprs)
+        vkep = np.clip(vkep, a_min=0.0, a_max=None)
+        if params['w_pressure'] > 0.0:
+            taper = (rvals - r_p) / params['w_pressure']
+            taper = np.exp(-np.power(taper, 2.0))
+            vkep *= np.where(rvals <= r_p, 1.0, taper)
+        return vkep
 
-    def _proj_vpow(self, rvals, tvals, zvals, params):
-        """Projected power-law rotational velocity profile."""
-        v_phi = (rvals * params['dist'] / 100.)**params['vp_q']
-        v_phi *= np.exp(-(rvals / params['vp_rtaper'])**params['vp_qtaper'])
-        v_phi = self._proj_vphi(params['vp_100'] * v_phi, tvals, params)
-        v_rad = (rvals * params['dist'] / 100.)**params['vr_q']
-        v_rad = self._proj_vrad(params['vr_100'] * v_rad, tvals, params)
-        return v_phi + v_rad
+    def _vpow(self, rvals, tvals, zvals, params):
+        """Power-law rotation velocity profile."""
+        vpow = (rvals * params['dist'] / 100.)**params['vp_q']
+        return params['vp_100'] * vpow
+
+    def _vpow_pressure(self, rvals, tvals, zvals, params):
+        """Power-law rotation with pressure term."""
+        vpow = self._vpow(rvals, tvals, zvals, params)
+        r_p = params['r_pressure']
+        idx = np.unravel_index(abs(rvals - r_p).argmin(), rvals.shape)
+        dvprs = ((rvals - r_p) / r_p) * params['vp_q'] + 1.0
+        vpow = np.where(rvals <= r_p, vpow, vpow[idx] * dvprs)
+        if params['w_pressure'] > 0.0:
+            taper = (rvals - r_p) / params['w_pressure']
+            taper = np.exp(-np.power(taper, 2.0))
+            vpow *= np.where(rvals <= r_p, 1.0, taper)
+        return vpow
 
     def _proj_vphi(self, v_phi, tvals, params):
         """Project the rotational velocity onto the sky."""
@@ -1210,12 +1398,27 @@ class rotationmap(datacube):
         """Project the radial velocity onto the sky."""
         return v_rad * np.sin(tvals) * np.sin(-np.radians(params['inc']))
 
+    def _proj_valt(self, v_alt, tvals, params):
+        """Project the vertical velocity onto the sky."""
+        return -v_alt * np.cos(np.radians(params['inc']))
+
     def _make_model(self, params):
         """Build the velocity model from the dictionary of parameters."""
-        v0 = self._v0(params)
+        rvals, tvals, zvals = self.disk_coords(**params)
+        vphi = params['vfunc'](rvals, tvals, zvals, params)
+        v0 = self._proj_vphi(vphi, tvals, params) + params['vlsr']
         if params['beam']:
             v0 = datacube._convolve_image(v0, self._beamkernel())
         return v0
+
+    def _make_profile(self, params):
+        """Build the velocity profile from the dictionary of parameters."""
+        rvals, _, zvals = self.disk_coords(**params)
+        rvals, zvals = rvals.flatten(), zvals.flatten()
+        idx = np.argsort(rvals)
+        rvals, zvals = rvals[idx], zvals[idx]
+        tvals = np.zeros(rvals.size)
+        return rvals, params['vfunc'](rvals, tvals, zvals, params)
 
     def deproject_model_residuals(self, samples, params):
         """

@@ -49,150 +49,10 @@ class datacube(object):
             self._clip_cube_velocity(*velocity_range)
 
     # -- PIXEL DEPROJECTION -- #
-    #
-    # def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=None, psi=None,
-    #                 r_cavity=0.0, r_taper=None, q_taper=None, w_i=0.0, w_r=1.0,
-    #                 w_t=0.0, outframe='cylindrical', z_func=None,
-    #                 shadowed=False, **_):
-    #
-    # def disk_coords(self, x0=0.0, y0=0.0, xaxis=None, yaxis=None, inc=0.0, PA=0.0, z0=0.0, psi=0.0,
-    #                 r_cavity=0.0, r_taper=None, q_taper=None, w_i=0.0, w_r=1.0,
-    #                 w_t=0.0, frame='cylindrical', **_):
-    #     r"""
-    #     Get the disk coordinates given certain geometrical parameters and an
-    #     emission surface. The emission surface is most simply described as a
-    #     power law profile,
-    #
-    #     .. math::
-    #
-    #         z(r) = z_0 \times \left(\frac{r}{1^{\prime\prime}}\right)^{\psi}
-    #
-    #     where ``z0`` and ``psi`` can be provided by the user. With the increase
-    #     in spatial resolution afforded by interferometers such as ALMA there
-    #     are a couple of modifications that can be used to provide a better
-    #     match to the data.
-    #
-    #     An inner cavity can be included with the ``r_cavity`` argument which
-    #     makes the transformation:
-    #
-    #     .. math::
-    #
-    #         \tilde{r} = {\rm max}(0, r - r_{\rm cavity})
-    #
-    #     Note that the inclusion of a cavity will mean that other parameters,
-    #     such as ``z0``, would need to change as the radial axis has effectively
-    #     been shifted.
-    #
-    #     To account for the drop in emission surface in the outer disk where the
-    #     gas surface density decreases there are two descriptions. The preferred
-    #     way is to include an exponential taper to the power law profile,
-    #
-    #     .. math::
-    #
-    #         z_{\rm tapered}(r) = z(r) \times \exp\left( -\left[
-    #         \frac{r}{r_{\rm taper}} \right]^{q_{\rm taper}} \right)
-    #
-    #     where both ``r_taper`` and ``q_taper`` values must be set.
-    #
-    #     We can also include a warp which is parameterized by,
-    #
-    #     .. math::
-    #
-    #         z_{\rm warp}(r,\, t) = r \times \tan \left(w_i \times \exp\left(-
-    #         \frac{r^2}{2 w_r^2} \right) \times \sin(t - w_t)\right)
-    #
-    #     where ``w_i`` is the inclination in [radians] describing the warp at
-    #     the disk center. The width of the warp is given by ``w_r`` [arcsec] and
-    #     ``w_t`` in [radians] is the angle of nodes (where the warp is zero),
-    #     relative to the position angle of the disk, measured east of north.
-    #
-    #     .. WARNING::
-    #
-    #         The use of warps is largely untested. Use with caution!
-    #         If you are using a warp, increase the number of iterations
-    #         for the inference through ``self.disk_coords_niter`` (by default at
-    #         5). For high inclinations, also set ``shadowed=True``.
-    #
-    #     Args:
-    #         x0 (optional[float]): Source right ascension offset [arcsec].
-    #         y0 (optional[float]): Source declination offset [arcsec].
-    #         inc (optional[float]): Source inclination [degrees].
-    #         PA (optional[float]): Source position angle [degrees]. Measured
-    #             between north and the red-shifted semi-major axis in an
-    #             easterly direction.
-    #         z0 (optional[float]): Aspect ratio at 1" for the emission surface.
-    #             To get the far side of the disk, make this number negative.
-    #         psi (optional[float]): Flaring angle for the emission surface.
-    #         z1 (optional[float]): Correction term for ``z0``.
-    #         phi (optional[float]): Flaring angle correction term for the
-    #             emission surface.
-    #         r_cavity (optional[float]): Outer radius of a cavity. Within this
-    #             region the emission surface is taken to be zero.
-    #         w_i (optional[float]): Warp inclination in [degrees] at the disk
-    #             center.
-    #         w_r (optional[float]): Scale radius of the warp in [arcsec].
-    #         w_t (optional[float]): Angle of nodes of the warp in [degrees].
-    #         outframe (optional[str]): Frame of reference for the returned
-    #             coordinates. Either ``'cartesian'`` or ``'cylindrical'``.
-    #
-    #     Returns:
-    #         array, array, array: Three coordinate arrays with ``(r, phi, z)``,
-    #         in units of [arcsec], [radians], [arcsec], if
-    #         ``frame='cylindrical'`` or ``(x, y, z)``, all in units of [arcsec]
-    #         if ``frame='cartesian'``.
-    #     """
-    #
-    #     # Check the input variables.
-    #
-    #     outframe = outframe.lower()
-    #     if outframe not in ['cylindrical', 'cartesian']:
-    #         raise ValueError("frame must be 'cylindrical' or 'cartesian'.")
-    #
-    #     # Get the x and y-axis
-    #     if type(xaxis) == type(None):
-    #         xaxis = self.xaxis
-    #     if type(yaxis) == type(None):
-    #         yaxis = self.yaxis
-    #
-    #     # Apply the inclination concention.
-    #
-    #     inc = inc if inc < 90.0 else inc - 180.0
-    #
-    #     # Check that the necessary pairs are provided.
-    #
-    #     msg = "Must specify either both or neither of `{}` and `{}`."
-    #     if (r_taper is not None) != (q_taper is not None):
-    #         raise ValueError(msg.format('r_taper', 'q_taper'))
-    #
-    #     # Set the defaults.
-    #
-    #     z0 = 0.0 if z0 is None else z0
-    #     psi = 1.0 if psi is None else psi
-    #     r_cavity = 0.0 if r_cavity is None else r_cavity
-    #     r_taper = np.inf if r_taper is None else r_taper
-    #     q_taper = 1.0 if q_taper is None else q_taper
-    #
-    #
-    #     # Calculate the pixel values.
-    #
-    #     if self.shadowed:
-    #         coords = self.get_shadowed_coords(x0, y0, inc, PA, z_func, w_func)
-    #     else:
-    #         # coords = dp.get_flared_coords(x0, y0, xaxis, yaxis, inc, PA, z0,
-    #         #                      r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, self.disk_coords_niter)
-    #
-    #         coords = self.get_flared_coords(x0, y0, xaxis, yaxis, inc, PA, z0,
-    #                               r_cavity, r_taper, psi, q_taper, w_r, w_i, w_t, self.disk_coords_niter)
-    #     if outframe == 'cylindrical':
-    #         return coords
-    #     r, t, z = coords
-    #     return r * np.cos(t), r * np.sin(t), z
-
-
-    def disk_coords(self, x0=0.0, y0=0.0, xaxis=None, yaxis=None, inc=0.0, PA=0.0, z0=None, psi=None,
+    def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
                     r_cavity=0.0, r_taper=None, q_taper=None, w_i=0.0, w_r=1.0,
                     w_t=0.0, z_func=None, outframe='cylindrical',
-                    shadowed=False, **_):
+                    shadowed=False, force_side=None, **_):
         r"""
         Get the disk coordinates given certain geometrical parameters and an
         emission surface. The emission surface is most simply described as a
@@ -298,6 +158,12 @@ class datacube(object):
                 coordinates. Either ``'cartesian'`` or ``'cylindrical'``.
             shadowed (Optional[bool]): Whether to use the slower, but more
                 robust method for deprojecting pixel values.
+            force_side (Optional[str]): Force the emission surface to be a
+                particular side, i.e., ``force_side='front'`` will force the
+                ``z_func`` argument to be positive, while ``force_side='back'``
+                will force ``z_func`` to be negative. Setting
+                ``force_side=None`` will allow any limit for the emission
+                height.
 
         Returns:
             array, array, array: Three coordinate arrays with ``(r, phi, z)``,
@@ -326,38 +192,53 @@ class datacube(object):
         if (w_i is not None) != (w_t is not None) != (w_r is not None):
             raise ValueError(msg)
 
-        flared = r_taper is not None or w_i is not None or r_cavity is not None
+        flared = r_taper is not None or w_i != 0.0 or r_cavity is not None
 
         # Select the quickest pixel deprojection method.
+        # First round is analytical forms where `z_func` is not specified.
 
-        if z0 is None or z0 == 0.0 and z_func is None:
+        z = None
 
-            r, t = self._get_midplane_polar_coords(x0, y0, inc, PA)
-            z = np.zeros(r.shape)
+        if z_func is None:
+            if z0 == 0.0:
+                r, t = self._get_midplane_polar_coords(x0, y0, inc, PA)
+                z = np.zeros(r.shape)
+            elif z0 > 0.0 and psi == 1.0 and not flared:
+                r, t, z = self._get_conical_polar_coords(x0, y0, inc, PA, z0)
 
-        elif z0 > 0.0 and psi == 1.0 and not flared and z_func is None:
+        # Here `z_func` can still be not provided, but must be defined based
+        # on the parameters provided (i.e., psi != 1.0).
 
-            r, t, z = self._get_conical_polar_coords(x0, y0, inc, PA, z0)
-
-        else:
+        if z is None:
 
             r_cavity = 0.0 if r_cavity is None else r_cavity
             r_taper = np.inf if r_taper is None else r_taper
             q_taper = 1.0 if q_taper is None else q_taper
+
             w_i = 0.0 if w_i is None else w_i
-            w_r = 1.0 if w_r is None else w_r
             w_t = 0.0 if w_t is None else w_t
+            w_r = 0.0 if w_r is None else w_r
+
+            # Define the emission surface and warp functions.
 
             if z_func is None:
                 def z_func(r_in):
                     r = np.clip(r_in - r_cavity, a_min=0.0, a_max=None)
                     z = r**psi * np.exp(-np.power(r / r_taper, q_taper))
-                    return np.clip(z0 * z, a_min=0.0, a_max=None)
+                    if force_side is None:
+                        return z0 * z
+                    a_min = 0.0 if force_side == 'front' else None
+                    a_max = 0.0 if force_side == 'back' else None
+                    return np.clip(z0 * z, a_min=a_min, a_max=a_max)
 
-            def w_func(r_in, t):
+            def w_func(r_in, t_in):
                 r = np.clip(r_in - r_cavity, a_min=0.0, a_max=None)
                 warp = np.radians(w_i) * np.exp(-0.5 * (r / w_r)**2)
-                return r * np.tan(warp * np.sin(t - np.radians(w_t)))
+                return r * np.tan(warp * np.sin(t_in - np.radians(w_t)))
+
+            # Select the deprojection method. `shadowed` uses the slower (but
+            # more robust) forward modelling approach, rather than an iterative
+            # method.
 
             if shadowed:
                 coords = self._get_shadowed_coords(x0, y0, inc, PA,
@@ -372,6 +253,54 @@ class datacube(object):
         if outframe == 'cylindrical':
             return r, t, z
         return r * np.cos(t), r * np.sin(t), z
+
+    def disk_to_sky(self, coords, inc, PA, x0=0.0, y0=0.0, frame='cartesian'):
+        """
+        Project disk-frame coordinates onto the sky plane.
+
+        Args:
+            coords (tuple): A tuple of the disk-frame coordinates to transform.
+                Must be either cartestian, cylindrical or spherical frames,
+                specified by the ``frame`` argument. If only two coordinates
+                are given, the input is assumed to be 2D. All spatial
+                coordinates should be given in [arcsec], while all angular
+                coordinates should be given in [radians].
+            inc (float): Inclination of the disk in [deg].
+            PA (float): Position angle of the disk, measured Eastwards to the
+                red-shifted major axis from North in [deg].
+            x0 (Optional[float]): Source right ascension offset in [arcsec].
+            y0 (Optional[float]): Source declination offset in [arcsec].
+            frame (Optional[str]): Coordinate frame of the disk coordinates,
+                either ``'cartesian'``, ``'cylindrical'`` or ``'spherical'``.
+
+        Returns:
+            Two arrays representing the projection of the input coordinates
+            onto the sky, ``x_sky`` and ``y_sky``.
+        """
+        try:
+            c1, c2, c3 = coords
+        except ValueError:
+            c1, c2 = coords
+            c3 = np.zeros(c1.size)
+        if frame.lower() == 'cartesian':
+            x, y, z = c1, c2, c3
+        elif frame.lower() == 'cylindrical':
+            x = c1 * np.cos(c2)
+            y = c1 * np.sin(c2)
+            z = c3
+        elif frame.lower() == 'spherical':
+            x = c1 * np.cos(c2) * np.sin(c3)
+            y = c1 * np.sin(c2) * np.sin(c3)
+            z = c1 * np.cos(c3)
+        else:
+            raise ValueError("frame_in must be 'cartestian'," +
+                             " 'cylindrical' or 'spherical'.")
+        inc = np.radians(inc)
+        PA = -np.radians(PA + 90.0)
+        y_roll = np.cos(inc) * y - np.sin(inc) * z
+        x_sky = np.cos(PA) * x - np.sin(PA) * y_roll
+        y_sky = np.sin(PA) * x + np.cos(PA) * y_roll
+        return x_sky, y_sky
 
     @staticmethod
     def _rotate_coords(x, y, PA):
@@ -427,19 +356,19 @@ class datacube(object):
         x_mid, y_mid = self._get_midplane_cart_coords(x0, y0, inc, PA)
         r_tmp, t_tmp = np.hypot(x_mid, y_mid), np.arctan2(y_mid, x_mid)
         for _ in range(self.flared_niter):
-            z_tmp = z_func(r_tmp) + w_func(r_tmp, t_tmp)
-            y_tmp = y_mid + z_tmp * np.tan(np.radians(inc))
+            y_tmp = y_mid + z_func(r_tmp) * np.tan(np.radians(inc))
             r_tmp = np.hypot(y_tmp, x_mid)
             t_tmp = np.arctan2(y_tmp, x_mid)
         return r_tmp, t_tmp, z_func(r_tmp)
 
     def _get_shadowed_coords(self, x0, y0, inc, PA, z_func, w_func):
-        """Return cyclindrical coords of surface in [arcsec, rad, arcsec]."""
+        """
+        Return cyclindrical coords of surface in [arcsec, rad, arcsec].
+        """
 
         # Make the disk-frame coordinates.
 
-        diskframe_coords = self._get_diskframe_coords()
-        xdisk, ydisk, rdisk, tdisk = diskframe_coords
+        xdisk, ydisk, rdisk, tdisk = self._get_diskframe_coords()
         zdisk = z_func(rdisk) + w_func(rdisk, tdisk)
 
         # Incline the disk.
@@ -456,7 +385,7 @@ class datacube(object):
         else:
             y_dep = np.minimum.accumulate(y_dep[::-1], axis=0)[::-1]
 
-        # Rotate and the disk.
+        # Rotate and recenter the disk.
 
         x_rot, y_rot = self._rotate_coords(x_dep, y_dep, PA)
         x_rot, y_rot = x_rot + x0, y_rot + y0
@@ -606,8 +535,8 @@ class datacube(object):
 
         self.xaxis = self._readpositionaxis(a=1)
         self.yaxis = self._readpositionaxis(a=2)
-        self.xaxis -= self.dpix
-        self.yaxis -= self.dpix
+        self.xaxis -= 0.5*self.dpix
+        self.yaxis -= 0.5*self.dpix
 
         # Spectral axis.
 
