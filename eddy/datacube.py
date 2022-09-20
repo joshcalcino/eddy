@@ -969,7 +969,7 @@ class datacube(object):
         if return_fig:
             return fig
 
-    def plot_surface(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=None, psi=None,
+    def plot_surface(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=None,
                      r_cavity=None, r_taper=None, q_taper=None, w_i=None,
                      w_r=None, w_t=None, z_func=None, w_func=None,
                      shadowed=False, r_max=None, mask=None, fill=None, ax=None,
