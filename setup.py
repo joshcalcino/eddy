@@ -8,11 +8,10 @@ with open("README.md", "r") as fh:
 
 setup(
     name="astro-eddy",
-    version="2.1.4-1",
+    version="2.3.7",
     author="Richard Teague",
-    author_email="richard.d.teague@cfa.harvard.edu",
-    description=("Tools to recover expectionally precise rotation curves from "
-                 "spatially resolved spectra."),
+    author_email="rteague@mit.edu",
+    description=("Tools to study the dynamics of protoplanetary disks."),
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/richteague/eddy",
@@ -26,6 +25,8 @@ setup(
         "corner>=2",
         "zeus-mcmc",
         ],
+    package_data={'eddy': ['*.yml']},
+    include_package_data=True,
     classifiers=[
         "Programming Language :: Python :: 3.5",
         "License :: OSI Approved :: MIT License",

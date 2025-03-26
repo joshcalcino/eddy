@@ -25,7 +25,11 @@ __all__ = ['annulus']
 class annulus(object):
     """
     A class containing an annulus of spectra with their associated polar angles
-    measured east of north from the redshifted major axis.
+    measured east of north from the redshifted major axis. These range from -pi
+    to +pi. It will also store the inclination of the disk which will
+    additionally define the rotation direction of the disk. A positive
+    inclination will define clockwise (west of north) rotation, while a negative
+    inclination will specify anti-clockwise direction.
 
     Args:
         spectra (ndarray): Array of shape ``[N, M]`` of spectra to shift and
@@ -33,26 +37,30 @@ class annulus(object):
             of the velocity axis.
         pvals (ndarray): Polar angles in [rad] of each of the spectra.
         velax (ndarray): Velocity axis in [m/s] of the spectra.
+        inc (float): Inclination of the disk in [deg]. A positive inclination
+            specifies a clockwise rotating disk.
         remove_empty (optional[bool]): Remove empty spectra.
         sort_spectra (optional[bool]): Sorted the spectra into increasing
             ``theta``.
-        suppress_warnings (optional[bool]): If ``True``, suppress all warnings.
     """
 
-    def __init__(self, spectra, pvals, velax, rotation='clockwise',
+    def __init__(self, spectra, pvals, velax, inc,
                  remove_empty=True, sort_spectra=True):
 
-        # Read in the spectra and remove bad values.
+        # Read in the spectra and estimate the RMS.
 
         self.theta = pvals
         self.spectra = spectra
-        self.rotation = rotation
-        if self.rotation not in ['clockwise', 'anticlockwise']:
-            msg = "Unknokwn rotation, {}.".format(self.rotation)
-            raise ValueError(msg + " Must br 'clockwise' or 'anticlockwise'.")
+        self.inc = inc
+        if self.inc == 0.0:
+            raise ValueError("Disk inclination must be non-zero.")
+        self.inc_rad = np.radians(self.inc)
+        self.sini = np.sin(self.inc_rad)
+        self.cosi = np.cos(self.inc_rad)
+        self.rotation = 'clockwise' if self.inc > 0 else 'anticlockwise'
         self.rms = self._estimate_RMS()
 
-        # Sort the spectra.
+        # Sort the spectra with increasing polar angle.
 
         if sort_spectra:
             idxs = np.argsort(self.theta)
@@ -108,7 +116,7 @@ class annulus(object):
 
     # -- Measure the Velocity -- #
 
-    def get_vlos(self, p0=None, fit_method='SHO', fit_vrad=False,
+    def get_vlos(self, p0=None, fit_method='SHO', fit_vrad=False, fix_vlsr=None,
                  resample=None, optimize=True, nwalkers=32, nburnin=500,
                  nsteps=500, scatter=1e-3, signal='int', optimize_kwargs=None,
                  mcmc='emcee', mcmc_kwargs=None, centroid_method='quadratic'):
@@ -137,6 +145,9 @@ class annulus(object):
                 nothing is provided these will be guessed but this may not
                 result in very good starting positions.
             fit_vrad (bool): Include radial motion in the fit.
+            fix_vlsr (optional[bool]): Fix the systemic velocity to calculate
+                the deprojected vertical velocities. Only available for
+                `fit_method='SHO'`.
             resample (optional[bool]): Resampling method to apply. See
                 :func:`deprojected_spectrum` for more details.
             optimize (optional[bool]): Optimize the starting positions before
@@ -161,13 +172,17 @@ class annulus(object):
         """
 
         # Check the input variables.
+
         fit_method = fit_method.lower()
         if fit_method not in ['dv', 'gp', 'snr', 'sho']:
             raise ValueError("method must be 'dV', 'GP', 'SNR' or 'SHO'.")
         if fit_method == 'gp' and not celerite_installed:
             raise ImportError("Must install 'celerite' to use GP method.")
+        if fix_vlsr is not None and fit_method != 'sho':
+            print("WARNING: fix_vlsr only available for fit_method='SHO'.")
 
         # Run the appropriate methods.
+
         if fit_method == 'gp':
             resample = False if resample is None else resample
             popt = self.get_vlos_GP(p0=p0, fit_vrad=fit_vrad,
@@ -196,34 +211,45 @@ class annulus(object):
             return popt[:2] if fit_vrad else popt[0]
 
         elif fit_method == 'sho':
-            popt, cvar = self.get_vlos_SHO(p0=p0, fit_vrad=fit_vrad,
+            popt, cvar = self.get_vlos_SHO(p0=p0, 
+                                           fit_vrad=fit_vrad,
+                                           fix_vlsr=fix_vlsr,
                                            centroid_method=centroid_method,
                                            optimize_kwargs=optimize_kwargs)
-            return (popt[:2], cvar[:2]) if fit_vrad else (popt[0], cvar[0])
+            return popt, cvar
 
     # -- Gaussian Processes Approach -- #
 
     def get_vlos_GP(self, p0=None, fit_vrad=False, optimize=False, nwalkers=64,
-                    nburnin=50, nsteps=100, resample=False, scatter=1e-3,
-                    niter=1, plots=None, returns=None, mcmc='emcee',
-                    optimize_kwargs=None, mcmc_kwargs=None):
+        nburnin=50, nsteps=100, scatter=1e-3, niter=1, plots=None, returns=None,
+        resample=False, mcmc='emcee', optimize_kwargs=None, mcmc_kwargs=None):
         """
-        Wrapper for the GP fitting.
+        Determine the azimuthally averaged rotational (and optionally radial)
+        velocity by finding the greatest overlap between 
 
         Args:
             p0 (optional[list]): Starting positions.
+            fit_vrad (optional[bool]): Whether to also fit for radial
+                velocities. Default is ``False``.
             optimize (optional[bool]): Run an optimization step prior to the
                 MCMC.
             nwalkers (optional[int]): Number of walkers for the MCMC.
             nburnin (optional[int]): Number of steps to discard for burn-in.
             nsteps (optional[int]): Number of steps used to sample the
                 posterior distributions.
-            resample (optional): Type of resampling to be implemented.
             scatter (optional[float]): Scatter of walkers around ``p0``.
+            niter (optional[int]): Number of iterations to run, with each run
+                adopting the median posterior values from the previous
+                iteration as starting points.
             plots (optional[list]): List of diagnostic plots to make. Can be
                 ``'walkers'``, ``'corner'`` or ``'none'``.
             returns (optional[list]) List of values to return. Can be
                 ``'samples'``, ``'percentiles'`` or ``'none'``.
+            mcmc (optional[str]): Which MCMC backend to run, either ``'emcee'``
+                or ``'zeus'``.
+            optimize_kwargs (optional[dict]): Kwargs to pass to the initial
+                optimization of starting parameters.
+            mcmc_kwargs (optional[dict]): Kwargs to pass to the MCMC sampler.
 
         Returns:
             Dependent on what is specified in ``returns``.
@@ -256,10 +282,9 @@ class annulus(object):
         if optimize:
             if optimize_kwargs is None:
                 optimize_kwargs = {}
-            p0 = self._optimize_p0_GP(p0, N=int(optimize), resample=resample,
-                                      **optimize_kwargs)
+            p0 = self._optimize_p0_GP(p0, N=int(optimize), **optimize_kwargs)
 
-        # Run the sampler
+        # Run the sampler.
 
         nsteps = np.atleast_1d(nsteps)
         nburnin = np.atleast_1d(nburnin)
@@ -354,6 +379,7 @@ class annulus(object):
 
         # Default parameters for the minimization.
         # Bit messy to preserve user chosen values.
+
         kwargs['method'] = kwargs.get('method', 'L-BFGS-B')
         options = kwargs.pop('options', {})
         kwargs['options'] = {'maxiter': options.pop('maxiter', 100000),
@@ -363,10 +389,12 @@ class annulus(object):
             kwargs['options'][key] = options[key]
 
         # Starting negative log likelihood to test against.
+
         fit_vrad = len(p0) == 5
         nlnL = self._nlnL(p0, resample=resample)
 
         # Cycle through the required number of iterations.
+
         for _ in range(int(N)):
 
             # Define the bounds.
@@ -376,6 +404,7 @@ class annulus(object):
             bounds += [(0.0, None), (-15.0, 10.0), (0.0, 10.0)]
 
             # Optimize hyper-parameters, holding vrot and vrad constant.
+
             res = minimize(self._nlnL_hyper, x0=p0[-3:],
                            args=(p0[0], p0[1] if fit_vrad else 0., resample),
                            bounds=bounds[-3:], **kwargs)
@@ -391,6 +420,7 @@ class annulus(object):
                     print('Failed hyper-params mimization: %s' % res.message)
 
             # Optimize vrot holding the hyper-parameters and vrad constant.
+
             res = minimize(self._nlnL_vrot, x0=p0[0],
                            args=(p0[-3:], p0[1] if fit_vrad else 0., resample),
                            bounds=[bounds[0]], **kwargs)
@@ -406,6 +436,7 @@ class annulus(object):
                         print('Failed vrot mimization: %s' % res.message)
 
             # Optimize vrad holding the hyper-parameters and vrot constant.
+
             if fit_vrad:
                 res = minimize(self._nlnL_vrad, x0=p0[1],
                                args=(p0[0], p0[-3:], resample),
@@ -422,6 +453,7 @@ class annulus(object):
                             print('Failed vrad mimization: %s' % res.message)
 
             # Final minimization with everything.
+
             res = minimize(self._nlnL, x0=p0, args=(resample),
                            bounds=bounds, **kwargs)
             if res.success:
@@ -514,6 +546,7 @@ class annulus(object):
         """Log-likelihood function for the MCMC."""
 
         # Unpack the free parameters.
+
         try:
             vrot, vrad = theta[:-3]
         except ValueError:
@@ -521,12 +554,14 @@ class annulus(object):
         hyperparams = theta[-3:]
 
         # Deproject the data and resample if requested.
+
         x, y = self.deprojected_spectrum(vrot=vrot, vrad=vrad,
                                          resample=resample,
                                          scatter=False)
         x, y = self._get_masked_spectrum(x, y)
 
         # Build the GP model and calculate the log-likelihood.
+
         gp = annulus._build_kernel(x, y, hyperparams)
         if gp is None:
             return -np.inf
@@ -544,16 +579,25 @@ class annulus(object):
     def get_vlos_dV(self, p0=None, fit_vrad=False, resample=False,
                     optimize_kwargs=None):
         """
-        Wrapper for the dV fitting.
+        Infer the rotational (and optically radial) velocity by minimizing the
+        width of the shifted-and-stacked azimuthally averaged spectrum.
 
         Args:
-            Coming Soon.
+            p0 (optional[list]): Starting positions for the optimization.
+            fit_vrad (optional[bool]): Whether to include the radial velocity
+                in the fit. Default is ``False``.
+            resample (optional[bool]): Resample the shifted spectra by this
+                factor. For example, resample = 2 will shift and bin the
+                spectrum down to sampling rate twice that of the original data.
+            optimize_kwargs (optional[dict]): Kwargs to pass to ``minimize``.
 
         Returns:
-            Coming Soon.
+            Velocities which minimize the line width of the shifted and stacked
+            spectrum.
         """
 
         # Starting positions.
+
         if p0 is None:
             p0 = self.guess_parameters(fit=True)[:2]
             if not fit_vrad:
@@ -561,22 +605,19 @@ class annulus(object):
         p0 = np.atleast_1d(p0)
 
         # Populate the kwargs.
+
         optimize_kwargs = {} if optimize_kwargs is None else optimize_kwargs
-        optimize_kwargs['method'] = optimize_kwargs.get('method', 'L-BFGS-B')
+        optimize_kwargs['method'] = optimize_kwargs.get('method', 'Nelder-Mead')
         options = optimize_kwargs.pop('options', {})
         options['maxiter'] = options.pop('maxiter', 10000)
         options['maxfun'] = options.pop('maxfun', 10000)
         options['ftol'] = options.pop('ftol', 1e-4)
         optimize_kwargs['options'] = options
 
-        # Define the bounds.
-        bounds = [[0.7 * p0[0], 1.3 * p0[0]]]
-        if fit_vrad:
-            bounds += [[-0.3 * p0[0], 0.3 * p0[0]]]
-        optimize_kwargs['bounds'] = np.array(bounds)
-
         # Run the minimization.
-        res = minimize(self.deprojected_width, x0=p0,
+
+        res = minimize(self.deprojected_width,
+                       x0=p0,
                        args=(fit_vrad, resample),
                        **optimize_kwargs)
         if not res.success:
@@ -599,26 +640,31 @@ class annulus(object):
         """
         from .helper_functions import get_gaussian_width
         vrot, vrad = theta if fit_vrad else (theta, 0.0)
-        x, y = self.deprojected_spectrum(vrot, vrad, resample, scatter=False)
+        x, y = self.deprojected_spectrum(vrot=vrot,
+                                         vrad=vrad,
+                                         resample=resample,
+                                         scatter=False)
         return get_gaussian_width(*self._get_masked_spectrum(x, y))
 
     # -- Rotation Velocity by Fitting a SHO -- #
 
-    def get_vlos_SHO(self, p0=None, fit_vrad=False,
+    def get_vlos_SHO(self, p0=None, fit_vrad=False, fix_vlsr=None,
                      centroid_method='quadratic', optimize_kwargs=None):
         """
-        Infer the rotation velocity by finding velocity which best describes
-        the azimuthal dependence of the line centroid modelled as a simple
-        harmonic oscillator.
+        Infer the disk-frame rotational (and, optionally, radial) velocity by
+        finding velocity which best describes the azimuthal dependence of the
+        line centroid modelled as a simple harmonic oscillator.
 
         Args:
-            p0 (Optional[list]): Starting positions for the optimization.
-            fit_vrad (Optional[bool]): Whether to include the radial velocity
+            p0 (optional[list]): Starting positions for the optimization.
+            fit_vrad (optional[bool]): Whether to include the radial velocity
                 in the fit. Default is ``False``.
-            centroid_method (Optional[str]): Method used to determine the line
+            fix_vlsr (optional[float]): If provided, use this value to deproject
+                the vertical velocity component.
+            centroid_method (optional[str]): Method used to determine the line
                 centroids, and must be one of ``'quadratic'``, ``'max'`` or
                 ``'gaussian'``.
-            optimize_kwargs (Optional[dict]): Kwargs to pass to ``curve_fit``.
+            optimize_kwargs (optional[dict]): Kwargs to pass to ``curve_fit``.
 
         Returns:
             pop, cvar (array, array): Arrays of the best-fit parameter values
@@ -627,46 +673,71 @@ class annulus(object):
         from .helper_functions import SHO, SHO_double
         v0, dv0 = self.line_centroids(method=centroid_method)
         assert v0.size == self.theta.size
+
+        # Starting positions. Here we're using projected velocities such that
+        # A = vrot * sin(|i|), B = -vrad * sin(i) and C = vlsr - vz * cos(i).
+
         if p0 is None:
-            v_p, v_lsr = 0.5 * (v0.max() - v0.min()), v0.mean()
-            p0 = [v_p, 0.0, v_lsr] if fit_vrad else [v_p, v_lsr]
+            A, B, C = 0.5 * (v0.max() - v0.min()), 0.0, v0.mean()
+            p0 = [A, C] if not fit_vrad else [A, B, C]
         assert len(p0) == 3 if fit_vrad else 2
+
+        # Set up curve_fit. TODO: Is there a better fitting routine than this?
+
         optimize_kwargs = {} if optimize_kwargs is None else optimize_kwargs
+        optimize_kwargs['p0'] = p0
         optimize_kwargs['sigma'] = dv0
         optimize_kwargs['absolute_sigma'] = True
         optimize_kwargs['maxfev'] = optimize_kwargs.pop('maxfev', 10000)
+
+        # Run the optimization.
+
         try:
             popt, cvar = curve_fit(SHO_double if fit_vrad else SHO,
                                    self.theta, v0, **optimize_kwargs)
         except TypeError:
-            popt = np.empty(2 if fit_vrad else 1)
+            popt = np.empty(3 if fit_vrad else 2)
             cvar = popt[:, None] * popt[None, :]
+        cvar = np.diag(cvar)**0.5
+
+        # Convert from projected velocities into disk-frame velocities.
+        # Note that C is only converted to vertical velocities if the systemic
+        # velocity is provided through `fix_vlsr`.
+
+        popt[0] /= abs(self.sini)
+        cvar[0] /= abs(self.sini)
         if fit_vrad:
-            popt[1] *= -1.0 if self.rotation == 'clockwise' else 1.0
-        return popt, np.diag(cvar)**0.5
+            popt[1] /= -self.sini
+            cvar[1] /= abs(self.sini)
+        if fix_vlsr is not None:
+            popt[-1] = (fix_vlsr - popt[-1]) / self.cosi
+            cvar[-1] /= self.cosi
+
+        # Return the optimized values.
+
+        return popt, cvar
 
     # -- Rotation Velocity by Maximizing SNR -- #
 
     def get_vlos_SNR(self, p0=None, fit_vrad=False, resample=False,
                      signal='int', optimize_kwargs=None):
         """
-        Infer the rotation velocity by finding the rotation velocity which,
-        after shifting all spectra to a common velocity, results in the
-        maximum signal-to=noise ratio of the stacked profile. This is an
-        implementation of the method described in Yen et al. (2016, 2018).
+        Infer the rotation (and, optically, the radial) velocity by finding the
+        rotation velocity (and radial velocities) which, after shifting all
+        spectra to a common velocity, results in the maximum signal-to=noise
+        ratio of the stacked profile. This is an implementation of the method
+        described in Yen et al. (2016, 2018).
 
         Args:
-            vref (Optional[float]): Predicted rotation velocity, typically the
-                Keplerian velocity at that radius. Will be used as the starting
-                position for the minimization.
-            resample (Optional[bool]): Resample the shifted spectra by this
+            p0 (optional[list]): Starting positions for the optimization.
+            fit_vrad (optional[bool]): Whether to include the radial velocity
+                in the fit. Default is ``False``.
+            resample (optional[bool]): Resample the shifted spectra by this
                 factor. For example, resample = 2 will shift and bin the
                 spectrum down to sampling rate twice that of the original data.
             signal (Optional[str]): Method used to calculate the signal, either
                 'max' for the line peak or 'int' for the integrated intensity.
-            weight_SNR (Optional[bool]): If True and sigal == 'int', include
-                the Gaussian weighting used to calculate the SNR as decscribed
-                in Yen et al. (2018).
+            optimize_kwargs (optional[dict]): Kwargs to pass to ``minimize``.
 
         Returns:
             Velocities which maximizese signal to noise of the shifted and
@@ -690,26 +761,20 @@ class annulus(object):
                 p0 = p0[:1]
         p0 = np.atleast_1d(p0)
 
-        # Populate the kwargs.
+        # Populate the kwargs. For some reason L-BFGS-B doesn't play nicely.
 
         optimize_kwargs = {} if optimize_kwargs is None else optimize_kwargs
-        optimize_kwargs['method'] = optimize_kwargs.get('method', 'L-BFGS-B')
+        optimize_kwargs['method'] = optimize_kwargs.get('method', 'Powell')
         options = optimize_kwargs.pop('options', {})
         options['maxiter'] = options.pop('maxiter', 10000)
         options['maxfun'] = options.pop('maxfun', 10000)
         options['ftol'] = options.pop('ftol', 1e-4)
         optimize_kwargs['options'] = options
 
-        # Define the bounds.
-
-        bounds = [[0.7 * p0[0], 1.3 * p0[0]]]
-        if fit_vrad:
-            bounds += [[-0.3 * p0[0], 0.3 * p0[0]]]
-        optimize_kwargs['bounds'] = np.array(bounds)
-
         # Run the minimization.
 
-        res = minimize(self.deprojected_nSNR, x0=p0,
+        res = minimize(self.deprojected_nSNR,
+                       x0=p0,
                        args=(fit_vrad, resample, signal),
                        **optimize_kwargs)
         if not res.success:
@@ -734,7 +799,7 @@ class annulus(object):
             too.
 
         Args:
-            theta (list): Deprojection velocities, ``(vrot[, vrad])``.
+            theta (list): Disk-frame velocities, ``(vrot[, vrad])``.
             fit_vrad (optional[bool]): Whether ``vrad`` in is ``theta``.
             resample (optional): How to resample the data. See
                 :func:`deprojected_spectrum` for more details.
@@ -745,7 +810,10 @@ class annulus(object):
         """
         from .helper_functions import gaussian, fit_gaussian
         vrot, vrad = theta if fit_vrad else (theta, 0.0)
-        x, y = self.deprojected_spectrum(vrot, vrad, resample, scatter=False)
+        x, y = self.deprojected_spectrum(vrot=vrot,
+                                         vrad=vrad,
+                                         resample=resample,
+                                         scatter=False)
         x0, dx, A = fit_gaussian(x, y)
         noise = np.std(x[(x - x0) / dx > 3.0])  # Check: noise will vary.
         if signal == 'max':
@@ -755,7 +823,7 @@ class annulus(object):
                 w = gaussian(x, x0, dx, (np.sqrt(np.pi) * dx)**-1)
             else:
                 w = np.ones(x.size)
-            mask = (x - x0) / dx <= 1.0
+            mask = (x - x0) / dx <= 3.0
             SNR = np.trapz((y * w)[mask], x=x[mask])
         return -SNR
 
@@ -780,28 +848,32 @@ class annulus(object):
         Calculate the line of sight velocity for each spectrum given the
         rotational and radial velocities at the attached polar angles.
 
+        Note that the rotational and radial velocities are specified in the disk
+        frame and do not take into account the projection along the line of
+        sight. Remember that a positive radial velocity is moving away from the
+        star.
+
         Args:
-            vrot (float): Projected rotation velocity in [m/s].
-            vrad (optional[float]): Projected radial velocity in [m/s].
+            vrot (float): Disk-frame rotation velocity in [m/s].
+            vrad (optional[float]): Disk-frame radial velocity in [m/s].
 
         Returns
             Array of projected line of sight velocities at each polar angle.
         """
-        _vrot = vrot * np.cos(self.theta)
-        _vrad = vrad * np.sin(self.theta)
-        _vrad *= -1.0 if self.rotation == 'clockwise' else 1.0
-        return _vrot + _vrad
+        vrot_proj = vrot * np.cos(self.theta) * np.sin(abs(self.inc_rad))
+        vrad_proj = -vrad * np.sin(self.theta) * np.sin(self.inc_rad)
+        return vrot_proj + vrad_proj
 
     def deprojected_spectra(self, vrot, vrad=0.0, kind='linear', weights=None):
         """
         Returns all deprojected points as an ensemble.
 
         Args:
-            vrot (float): Projected rotation velocity in [m/s].
-            vrad (optional[float]): Projected radial velocity in [m/s].
+            vrot (float): Disk-frame rotation velocity in [m/s].
+            vrad (optional[float]): Disk-frame radial velocity in [m/s].
             kind (optional[str]): Interpolation kind to use.
             weights (optional): The weights used to smooth the data prior to
-                shifting. If a ``float`` or ``int`` is provided, will interpret=
+                shifting. If a ``float`` or ``int`` is provided, will interpret
                 this as a top-hat function with that width.
 
         Returns:
@@ -847,18 +919,23 @@ class annulus(object):
                 data.
 
         Returns:
-            [TBD] - self.theta_grid, self.velax_grid, river
+            The polar angle grid, the velocity grid and the river.
         """
         river = self.deprojected_spectra(vrot, vrad, kind, weights)
         river = self._grid_river(river, method)
         return self.theta_grid, self.velax_grid, river
 
-    def deprojected_spectrum(self, vrot, vrad=0.0, resample=True,
-                             scatter=True):
+    def deprojected_spectrum(self, vrot, vrad=0.0, resample=True, scatter=True):
         """
         Returns ``(x, y[, dy])`` of the collapsed and deprojected spectrum
-        using the provided velocities to deproject the data. Different methods
-        to resample the data can be applied.
+        using the provided velocities to deproject the data.
+        
+        Note that the rotational and radial velocities are specified in the disk
+        frame and do not take into account the projection along the line of
+        sight. Remember that a positive radial velocity is moving away from the
+        star.
+        
+        Different methods to resample the data can also be applied.
 
             ``reasmple=False`` - returns the unbinned, shifted pixels.
 
@@ -877,15 +954,14 @@ class annulus(object):
         for ``resample``.
 
         Args:
-            vrot (float): Rotational velocity in [m/s].
-            vrad (optional[float]): Radial velocity in [m/s].
+            vrot (float): Disk-frame rotational velocity in [m/s].
+            vrad (optional[float]): Disk-frame radial velocity in [m/s].
             resample (optional): Type of resampling to be applied.
             scatter (optional[bool]): If the spectrum is resampled, whether to
                 return the scatter in each velocity bin.
 
         Returns:
             A deprojected spectrum, resampled using the provided method.
-
         """
         vlos = self.calc_vlos(vrot=vrot, vrad=vrad)
         vpnts = self.velax[None, :] - vlos[:, None]
@@ -938,6 +1014,11 @@ class annulus(object):
         elif method == 'doublegauss':
             from .helper_functions import get_doublegauss_center
             vmax = [get_doublegauss_center(self.velax, s, self.rms)
+                    for s in self.spectra]
+            vmax, dvmax = np.array(vmax).T
+        elif method == 'doublegauss_fixeddv':
+            from .helper_functions import get_doublegauss_fixeddV_center
+            vmax = [get_doublegauss_fixeddV_center(self.velax, s, self.rms)
                     for s in self.spectra]
             vmax, dvmax = np.array(vmax).T
         else:
@@ -1025,32 +1106,50 @@ class annulus(object):
 
         Returns:
             The rotational, radial and systemic velocities all in [m/s].
-
         """
         vpeaks, _ = self.line_centroids(method=method)
         vlsr = np.mean(vpeaks)
 
-        vrot = vpeaks[abs(self.theta).argmin()]
-        vrot -= vpeaks[abs(self.theta - np.pi).argmin()]
-        vrot *= 0.5
+        vrot_p = vpeaks[abs(self.theta).argmin()]
+        vrot_p -= vpeaks[abs(self.theta - np.pi).argmin()]
+        vrot_p *= 0.5
 
-        vrad = vpeaks[abs(self.theta - 0.5 * np.pi).argmin()]
-        vrad -= vpeaks[abs(self.theta + 0.5 * np.pi).argmin()]
-        vrad *= 0.5
+        vrad_p = vpeaks[abs(self.theta - 0.5 * np.pi).argmin()]
+        vrad_p -= vpeaks[abs(self.theta + 0.5 * np.pi).argmin()]
+        vrad_p *= -0.5
 
-        if not fit:
-            return vrot, vrad, vlsr
-        try:
-            from .helper_functions import SHO_double
-            return curve_fit(SHO_double, self.theta, vpeaks,
-                             p0=[vrot, vrad, vlsr], maxfev=10000)[0]
-        except Exception:
-            return vrot, vrad, vlsr
+        if fit:
+            try:
+                from .helper_functions import SHO_double
+                vrot_p, vrad_p = curve_fit(f=SHO_double,
+                                           xdata=self.theta,
+                                           ydata=vpeaks,
+                                           p0=[vrot_p, vrad_p, vlsr],
+                                           maxfev=10000)[0][:2]
+            except Exception:
+                print("Fitting failed...")
+
+        vrot = vrot_p / np.sin(abs(self.inc_rad))
+        vrad = -vrad_p / np.sin(self.inc_rad)
+
+        return vrot, vrad, vlsr
 
     # -- River Functions -- #
 
     def _grid_river(self, spnts, method='nearest'):
-        """Grid the data to plot as a river."""
+        """
+        Grid the data to plot as a river as a regular grid. The grids can be
+        changed with through the ``theta_grid`` and ``velax_grid`` attributes.
+
+        Args:
+            spnts (ndarray): Array of spectra to grid with shape ``(N, M)``
+                where ``N`` is the number of spectra and ``M`` is the number of
+                velocity channels.
+            method (optional[str]): Interpolation method to use.
+
+        Returns:
+            river (ndarray): The regularly gridded river.
+        """
         from scipy.interpolate import griddata
         spnts = np.vstack([spnts[-1:], spnts, spnts[:1]])
         vpnts = self.velax[None, :] * np.ones(spnts.shape)
@@ -1064,111 +1163,6 @@ class annulus(object):
         sgrid = np.where(self.theta_grid[:, None] > tpnts.max(), np.nan, sgrid)
         sgrid = np.where(self.theta_grid[:, None] < tpnts.min(), np.nan, sgrid)
         return sgrid
-
-    def plot_river(self, vrot=None, vrad=0.0, residual=False, method='nearest',
-                   plot_kwargs=None, profile_kwargs=None, return_fig=False):
-        """
-        Make a river plot, showing how the spectra change around the azimuth.
-        This is a nice way to search for structure within the data.
-
-        Args:
-            vrot (Optional[float]): Rotational velocity used to deprojected the
-                spectra. If none is provided, no deprojection is used.
-            vrad (Optional[float]): Radial velocity used to deproject the
-                spectra.
-            residual (Optional[bool]): If true, subtract the azimuthally
-                averaged line profile.
-            resample (Optional[int/float]): Resample the velocity axis by this
-                factor if a ``int``, else set the channel spacing to this value
-                if a ``float``. Note that this is not the same resampling
-                method as used for the spectra and should only be used for
-                qualitative analysis.
-            method (Optional[str]): Interpolation method for ``griddata``.
-            xlims (Optional[list]): Minimum and maximum x-range for the figure.
-            ylims (Optional[list]): Minimum and maximum y-range for the figure.
-            tgrid (Optional[ndarray]): Theta grid in [rad] used for gridding
-                the data. By default this spans ``-pi`` to ``pi``.
-            return_fig (Optional[bool]): Whether to return the figure axes.
-
-        Returns:
-            Matplotlib figure. To access the axis use ``ax=fig.axes[0]``.
-        """
-
-        # Imports.
-
-        from matplotlib.ticker import MultipleLocator
-        from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
-
-        # Deproject and grid the spectra.
-
-        if vrot is None:
-            spectra = self.spectra
-        else:
-            spectra = self.deprojected_spectra(vrot=vrot, vrad=vrad)
-        spectra = self._grid_river(spectra, method=method)
-
-        # Get the residual if necessary.
-
-        mean_spectrum = np.nanmean(spectra, axis=0)
-        if residual:
-            spectra -= mean_spectrum
-            spectra *= 1e3
-
-        # Estimate the RMS.
-
-        rms = np.nanmax(spectra)
-        for _ in range(5):
-            rms = np.nanstd(spectra[abs(spectra) <= 3.0 * rms])
-
-        # Define the min and max for plotting.
-
-        kw = {} if plot_kwargs is None else plot_kwargs
-        xlim = kw.pop('xlim', None)
-        kw['vmax'] = kw.pop('vmax', np.nanmax(abs(spectra)))
-        kw['vmin'] = kw.pop('vmin', -kw['vmax'] if residual else -rms)
-        kw['cmap'] = kw.pop('cmap', 'RdBu_r' if residual else 'turbo')
-
-        # Plot the data.
-
-        fig, ax = plt.subplots(figsize=(6.0, 2.25), constrained_layout=True)
-        ax_divider = make_axes_locatable(ax)
-        im = ax.pcolormesh(self.velax_grid, np.degrees(self.theta_grid),
-                           spectra, **kw)
-        ax.set_ylim(-180, 180)
-        ax.yaxis.set_major_locator(MultipleLocator(60.0))
-        ax.set_xlim(xlim)
-        ax.set_xlabel('Velocity (m/s)')
-        ax.set_ylabel(r'$\phi$' + ' (deg)')
-
-        # Add the mean spectrum panel.
-
-        if not residual:
-            fig.set_size_inches(6.0, 2.5, forward=True)
-            ax1 = ax_divider.append_axes('top', size='25%', pad='2%')
-            ax1.step(self.velax_grid, mean_spectrum,
-                     where='mid', lw=1., c='k')
-            ax1.fill_between(self.velax_grid, mean_spectrum,
-                             step='mid', color='.7')
-            ax1.set_ylim(3*kw['vmin'], kw['vmax'])
-            ax1.set_xlim(ax.get_xlim()[0], ax.get_xlim()[1])
-            ax1.set_xticklabels([])
-            ax1.set_yticklabels([])
-            ax1.tick_params(which='both', left=0, bottom=0, right=0, top=0)
-            for side in ['left', 'right', 'top', 'bottom']:
-                ax1.spines[side].set_visible(False)
-
-        # Add the colorbar.
-
-        cb_ax = ax_divider.append_axes('right', size='2%', pad='1%')
-        cb = plt.colorbar(im, cax=cb_ax)
-        if residual:
-            cb.set_label('Residual (mJy/beam)', rotation=270, labelpad=13)
-        else:
-            cb.set_label('Intensity (Jy/beam)', rotation=270, labelpad=13)
-        plt.tight_layout()
-
-        if return_fig:
-            return fig
 
     # -- Plotting Functions -- #
 
@@ -1207,8 +1201,8 @@ class annulus(object):
         averaged spectrum, by default a Gaussian profile.
 
         Args:
-            vrot (Optional[float]): Projected rotation velocity in [m/s].
-            vrad (Optional[float]): Projected radial velocity in [m/s].
+            vrot (Optional[float]): Rotation velocity in [m/s].
+            vrad (Optional[float]): Radial velocity in [m/s].
             resample (Optional[int/float/bool]): Resampling option. See
                 ``annulus.deprojected_spectrum`` for more details.
             plot_fit (Optional[bool/str]): Whether to overplot a fit to the
@@ -1285,10 +1279,10 @@ class annulus(object):
 
             # Include the best-fit parameters.
 
-            for l, label in enumerate(labels):
-                annotation = label + ' = {:.0f}'.format(popt[l])
-                annotation += ' +/- {:.0f} {}'.format(cvar[l], units[l])
-                ax.text(0.975, 0.95 - 0.075 * l, annotation,
+            for lidx, label in enumerate(labels):
+                annotation = label + ' = {:.0f}'.format(popt[lidx])
+                annotation += ' +/- {:.0f} {}'.format(cvar[lidx], units[lidx])
+                ax.text(0.975, 0.95 - 0.075 * lidx, annotation,
                         ha='right', va='top', color='r',
                         transform=ax.transAxes)
 
@@ -1296,11 +1290,137 @@ class annulus(object):
         if return_fig:
             return fig
 
+    def plot_river(self, vrot=None, vrad=0.0, residual=False, method='nearest',
+                   plot_kwargs=None, profile_kwargs=None, return_fig=False):
+        """
+        Make a river plot, showing how the spectra change around the azimuth.
+        This is a nice way to search for structure within the data.
+
+        Args:
+            vrot (Optional[float]): Rotational velocity used to deprojected the
+                spectra. If none is provided, no deprojection is used.
+            vrad (Optional[float]): Radial velocity used to deproject the
+                spectra.
+            residual (Optional[bool]): If true, subtract the azimuthally
+                averaged line profile.
+            resample (Optional[int/float]): Resample the velocity axis by this
+                factor if a ``int``, else set the channel spacing to this value
+                if a ``float``. Note that this is not the same resampling
+                method as used for the spectra and should only be used for
+                qualitative analysis.
+            method (Optional[str]): Interpolation method for ``griddata``.
+            xlims (Optional[list]): Minimum and maximum x-range for the figure.
+            ylims (Optional[list]): Minimum and maximum y-range for the figure.
+            tgrid (Optional[ndarray]): Theta grid in [rad] used for gridding
+                the data. By default this spans ``-pi`` to ``pi``.
+            return_fig (Optional[bool]): Whether to return the figure axes.
+
+        Returns:
+            Matplotlib figure. To access the axis use ``ax=fig.axes[0]``.
+        """
+
+        # Imports.
+
+        from matplotlib.ticker import MultipleLocator
+        from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
+
+        # Deproject and grid the spectra.
+
+        if vrot is None:
+            spectra = self.spectra
+        else:
+            spectra = self.deprojected_spectra(vrot=vrot, vrad=vrad)
+        spectra = self._grid_river(spectra, method=method)
+
+        # Get the residual if necessary.
+
+        mean_spectrum = np.nanmean(spectra, axis=0)
+        if residual:
+            spectra -= mean_spectrum
+            spectra *= 1e3
+
+        # Estimate the RMS. Here we try an iterative clip but if this seems to
+        # remove all the points we revert to a standard deviation.
+
+        rms = np.nanstd(spectra)
+        for _ in range(5):
+            rms = np.nanstd(spectra[abs(spectra) <= 3.0 * rms])
+        if np.isnan(rms):
+            rms = np.nanstd(spectra)
+
+        # Define the min and max for plotting.
+
+        kw = {} if plot_kwargs is None else plot_kwargs
+        xlim = kw.pop('xlim', None)
+        kw['vmax'] = kw.pop('vmax', np.nanmax(abs(spectra)))
+        kw['vmin'] = kw.pop('vmin', -kw['vmax'] if residual else -rms)
+        kw['cmap'] = kw.pop('cmap', 'RdBu_r' if residual else 'turbo')
+
+        # Plot the data.
+
+        fig, ax = plt.subplots(figsize=(6.0, 2.25), constrained_layout=True)
+        ax_divider = make_axes_locatable(ax)
+        im = ax.pcolormesh(self.velax_grid, np.degrees(self.theta_grid),
+                           spectra, **kw)
+        ax.set_ylim(-180, 180)
+        ax.yaxis.set_major_locator(MultipleLocator(60.0))
+        ax.set_xlim(xlim)
+        ax.set_xlabel('Velocity (m/s)')
+        ax.set_ylabel(r'$\phi$' + ' (deg)')
+
+        # Add the mean spectrum panel.
+
+        if not residual:
+            fig.set_size_inches(6.0, 2.5, forward=True)
+            ax1 = ax_divider.append_axes('top', size='25%', pad='2%')
+            ax1.step(self.velax_grid, mean_spectrum,
+                     where='mid', lw=1., c='k')
+            ax1.fill_between(self.velax_grid, mean_spectrum,
+                             step='mid', color='.7')
+            ax1.set_ylim(3*kw['vmin'], kw['vmax'])
+            ax1.set_xlim(ax.get_xlim()[0], ax.get_xlim()[1])
+            ax1.set_xticklabels([])
+            ax1.set_yticklabels([])
+            ax1.tick_params(which='both', left=0, bottom=0, right=0, top=0)
+            for side in ['left', 'right', 'top', 'bottom']:
+                ax1.spines[side].set_visible(False)
+
+        # Add the colorbar.
+
+        cb_ax = ax_divider.append_axes('right', size='2%', pad='1%')
+        cb = plt.colorbar(im, cax=cb_ax)
+        if residual:
+            cb.set_label('Residual (mJy/beam)', rotation=270, labelpad=13)
+        else:
+            cb.set_label('Intensity (Jy/beam)', rotation=270, labelpad=13)
+
+        if return_fig:
+            return fig
+
     def plot_centroids(self, centroid_method='quadratic', plot_fit=None,
-                       fit_vrad=False, ax=None, return_fig=False,
+                       fit_vrad=False, fix_vlsr=None, ax=None, return_fig=False,
                        plot_kwargs=None):
         """
         Plot the measured line centroids as a function of polar angle.
+
+        Args:
+            centroid_method (Optional[str]): Method used to determine the line
+                centroid. Default is `'quadratic'`.
+            plot_fit (Optional[bool]): Whether to overplot a SHO fit to the
+                data.
+            fit_vrad (Optional[bool]): Whether to include a radial velocity
+                component to the fit.
+            fix_vlsr (Optional[bool]): Fix the systemic velocity to calculate
+                the deprojected vertical velocities.
+            ax (Optional[matploib axis]): Axis to plot the data (and fit) onto,
+                otherwise a new figure will be created.
+            return_fig (Optional[bool]): Whether to return the figure for
+                subsequent plotting.
+            plot_kwargs (Optional[dict]):
+
+        Returns:
+            Matplotlib figure. If `return_fig=True`. To access the axis use
+                ``ax=fig.axes[0]``. 
         """
 
         from .helper_functions import SHO_double
@@ -1309,8 +1429,12 @@ class annulus(object):
         else:
             return_fig = False
 
+        # Calculate the line centroids.
+
         v0, dv0 = self.line_centroids(method=centroid_method)
-        dv0 = v0.copy() * 0.025
+        dv0 = abs(dv0)
+
+        # Set the defaults for plotting.
 
         plot_kwargs = {} if plot_kwargs is None else plot_kwargs
         plot_kwargs['fmt'] = plot_kwargs.pop('fmt', 'o')
@@ -1318,6 +1442,8 @@ class annulus(object):
         plot_kwargs['ms'] = plot_kwargs.pop('ms', 4)
         plot_kwargs['lw'] = plot_kwargs.pop('lw', 1.25)
         plot_kwargs['capsize'] = plot_kwargs.pop('capsize', 2.5)
+
+        # Plot the data.
 
         L = ax.errorbar(self.theta_deg, v0, dv0, **plot_kwargs)
         ax.set_xlim(-180, 180)
@@ -1331,31 +1457,56 @@ class annulus(object):
 
             # Fit the data.
 
+            popt, cvar = self.get_vlos_SHO(fit_vrad=fit_vrad,
+                                           fix_vlsr=fix_vlsr,
+                                           centroid_method=centroid_method)
+
+            v_p, dv_p = popt[0] * abs(self.sini), cvar[0] * abs(self.sini)
             if fit_vrad:
-                popt, cvar = self.get_vlos_SHO(fit_vrad=True,
-                                               centroid_method=centroid_method)
-                v_p, v_r, vlsr = popt
-                dv_p, dv_r, dvlsr = cvar
+                v_r, dv_r = popt[1] * self.sini, cvar[1] * abs(self.sini)
             else:
-                popt, cvar = self.get_vlos_SHO(fit_vrad=False,
-                                               centroid_method=centroid_method)
-                v_p, vlsr = popt
-                dv_p, dvlar = cvar
-                v_r = 0.0
+                v_r, dv_r = 0.0, 0.0
+            if fix_vlsr:
+                vlsr, dvlsr = fix_vlsr, 0.0
+                v_z, dv_z = popt[-1] * self.cosi, cvar[-1] * self.cosi
+            else:
+                vlsr, dvlsr = popt[-1], cvar[-1]
+                v_z, dv_z = None, None
+
+            # Note that as get_vlos_SHO returns the true values, so we need to
+            # reproject them.
 
             v0mod = SHO_double(self.theta_grid, v_p, v_r, vlsr)
             ax.plot(np.degrees(self.theta_grid), v0mod, lw=1.0, ls='--',
                     color='r', zorder=L[0].get_zorder()-10)
 
-            label = r'$v_{\phi,\, proj}$' + ' = {:.0f} '.format(v_p)
-            label += r'$\pm$' + ' {:.0f} (m/s)'.format(dv_p)
+            # Add in the labels. If the systemic velocity has a small error then
+            # we can skip the uncertainty. If a vlsr is not provided then we can
+            # skip the v_z label.
+
+            label = r'$v_{\rm LSR}$' + ' = {:.0f} '.format(vlsr)
+            if dvlsr > 0.5:
+                label += r'$\pm$' + ' {:.0f} '.format(dvlsr)
+            label += 'm/s'
             ax.text(0.975, 0.975, label, va='top', ha='right', color='r',
+                    transform=ax.transAxes)
+
+            label = r'$v_{\phi,\, proj}$' + ' = {:.0f} '.format(v_p)
+            label += r'$\pm$' + ' {:.0f} m/s'.format(dv_p)
+            ax.text(0.975, 0.900, label, va='top', ha='right', color='r',
                     transform=ax.transAxes)
 
             if fit_vrad:
                 label = r'$v_{r,\, proj}$' + ' = {:.0f} '.format(v_r)
-                label += r'$\pm$' + ' {:.0f} (m/s)'.format(dv_r)
-                ax.text(0.975, 0.90, label, va='top', ha='right', color='r',
+                label += r'$\pm$' + ' {:.0f} m/s'.format(dv_r)
+                ax.text(0.975, 0.825, label, va='top', ha='right', color='r',
+                        transform=ax.transAxes)
+                
+            if v_z is not None:
+                label = r'$v_{z,\, proj}$' + ' = {:.0f} '.format(v_z)
+                label += r'$\pm$' + ' {:.0f} m/s'.format(dv_z)
+                ax.text(0.975, 0.750 if fit_vrad else 0.825,
+                        label, va='top', ha='right', color='r',
                         transform=ax.transAxes)
 
             ylim = max(ax.get_ylim()[1] - vlsr, vlsr - ax.get_ylim()[0])

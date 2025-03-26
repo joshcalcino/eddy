@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import time
+import yaml
 import zeus
 import emcee
 import numpy as np
@@ -39,16 +40,32 @@ class rotationmap(datacube):
             If you use ``downsample='beam'`` it will sample roughly
             spatially independent pixels using the beam major axis as the
             spacing.
+        fill (Optional[float]): Replace all ``NaN`` values with this value.
+        force_center (Optional[bool]): If ``True`` define the spatial axes such
+            that they describe offset from the array center in [arcsec]. This
+            is useful if the FITS header does not contain axis information.
     """
 
     priors = {}
 
-    def __init__(self, path, FOV=None, uncertainty=None, downsample=None):
-        datacube.__init__(self, path=path, FOV=FOV, fill=None)
+    def __init__(self, path, FOV=None, uncertainty=None, downsample=None,
+                 fill=None, force_center=False):
+        datacube.__init__(self, path=path, FOV=FOV, fill=fill,
+                          force_center=force_center)
+
+        # Check to see what unit the velocities are in.
+        # TODO: Sometimes the bunit is not m/s or km/s so we might want to
+        # include a check.
+
+        if self.header['bunit'].lower() not in ['m/s', 'km/s']:
+            msg = "What is the velocity unit? Either `m/s` or `km/s`."
+            self.velocity_unit = input(msg)
+        else:
+            self.velocity_unit = self.header['bunit'].lower()
+
+        self.data *= 1e3 if self.velocity_unit == 'km/s' else 1.0
         self.mask = np.isfinite(self.data)
         self._readuncertainty(uncertainty=uncertainty, FOV=FOV)
-
-        self.downsample = downsample
 
         self.original_xaxis = None
         self.original_yaxis = None
@@ -63,8 +80,7 @@ class rotationmap(datacube):
             # Now downsample the cube
             self.downsample_cube(downsample)
 
-        self.vlsr = np.nanmedian(self.data)
-        self.vlsr_kms = self.vlsr / 1e3
+        self.default_parameters = self._load_default_parameters()
         self._set_default_priors()
 
         basename = os.path.basename(self.path)
@@ -84,6 +100,14 @@ class rotationmap(datacube):
         self.s_py = None
 
         self.cleaned_data = None
+
+    @property
+    def vlsr(self):
+        return np.nanmedian(self.data)
+
+    @property
+    def vlsr_kms(self):
+        return self.vlsr / 1e3
 
     # -- FITTING FUNCTIONS -- #
 
@@ -323,6 +347,7 @@ class rotationmap(datacube):
         return to_return if len(to_return) > 1 else to_return[0]
 
     def fit_annuli(self, rpnts=None, rbins=None, x0=0.0, y0=0.0, inc=0.0,
+<<<<<<< HEAD
                    PA=0.0, z0=0.0, psi=None, r_cavity=None, r_taper=None,
                    q_taper=None, w_i=None, w_r=None, w_t=None, z_func=None,
                    shadowed=False, phi_min=None, phi_max=None,
@@ -330,6 +355,14 @@ class rotationmap(datacube):
                    user_mask=None, fit_vrot=True, fit_vrad=True,
                    fix_vlsr=False, plots=None, returns=None,
                    optimize_kwargs=None):
+=======
+                   PA=0.0, z0=0.0, psi=1.0, r_cavity=0.0, r_taper=np.inf,
+                   q_taper=1.0, z_func=None, shadowed=False, phi_min=None,
+                   phi_max=None, exclude_phi=False, abs_phi=False,
+                   mask_frame='disk', user_mask=None, fit_vrad=True,
+                   fix_vlsr=None, beam_spacing=0, niter=1, plots=None,
+                   returns=None, optimize_kwargs=None, MCMC=False):
+>>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
         r"""
         Splits the map into concentric annuli based on the geometrical
         parameters, then fits each annnulus with a simple harmonic oscillator
@@ -337,15 +370,16 @@ class rotationmap(datacube):
 
         .. math::
 
-            v(\phi) = v_{\phi} \cos(\rm \phi) \pm v_{\rm rad} \sin(\phi) + v_{\rm lsr}
+            v_0(\phi) = v_{\phi} \cos(\phi) \sin(|i|) - v_{\rm r} \sin(\phi) \sin(i) - v_{\rm z} \cos(i) + v_{\rm lsr}
 
-        where the :math:`\pm` arises due to the projection of the radial
-        velocity, defined such that positive values are away from the star,
-        along the line of sight.
+        where :math:`i` is the inclination of the disk.
 
         Args:
-            rpnts
-            rbins
+            rpnts (Optional[array]): Array of radial position in [arcsec] to
+                center the annuli on. Only ``rpnts`` or ``rbins`` need to be
+                set.
+            rbins (Optional[array]): Array of annuli edges in [arcsec] to use.
+                Only ``rpnts`` or ``rbins`` need to be set.
             x0 (Optional[float]): Source right ascension offset [arcsec].
             y0 (Optional[float]): Source declination offset [arcsec].
             inc (Optional[float]): Source inclination [degrees]. A positive
@@ -357,15 +391,8 @@ class rotationmap(datacube):
             z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
                 To get the far side of the disk, make this number negative.
             psi (Optional[float]): Flaring angle for the emission surface.
-            z1 (Optional[float]): Correction term for ``z0``.
-            phi (Optional[float]): Flaring angle correction term for the
-                emission surface.
             r_cavity (Optional[float]): Outer radius of a cavity. Within this
                 region the emission surface is taken to be zero.
-            w_i (Optional[float]): Warp inclination in [degrees] at the disk
-                center.
-            w_r (Optional[float]): Scale radius of the warp in [arcsec].
-            w_t (Optional[float]): Angle of nodes of the warp in [degrees].
             z_func (Optional[callable]): A user-defined emission surface
                 function that will return ``z`` in [arcsec] for a given ``r``
                 in [arcsec]. This will override the analytical form.
@@ -384,13 +411,15 @@ class rotationmap(datacube):
             mask_frame (Optional[str]): Which frame the radial and azimuthal
                 mask is specified in, either ``'disk'`` or ``'sky'``.
             user_mask (Optional[ndarray]): A 2D mask to use.
-            fit_vrot (Optional[bool]): Whether to include rotational velocities
-                in the fit. Default is ``True``.
             fit_vrad (Optional[bool]): Whether to include radial velocities in
-                    the fit. Default is ``True``.
-            fix_vlsr (Optional[bool/float]): Fix the systemic velocity to this
-                value in the fitting, otherwise allow it to be a free
-                parameter. Default is ``False``.
+                the fit. Default is ``True``.
+            fix_vlsr (Optional[float]): Fix the systemic velocity to this value
+                such that returned velocity component is the deprojected
+                vertical velocity.
+            beam_spacing (Optional[int/float]): If provided, sample pixels that
+                are roughly this fraction of a beam separated.
+            niter (Optional[int]): Run ``niter`` iterations. Should only be
+                used when `beam_spacing > 0`.
             plots (Optional[list]): Plots to generate after the fitting. Can be
                 either of ``'model'`` and ``'residual'``. Default is both.
             returns (Optional[list]): List of objects to return. Can be any of
@@ -402,47 +431,80 @@ class rotationmap(datacube):
             Depends on the value of ``returns``.
         """
 
+        # Remove possbility to run niter > 1 with beam_spacing = 0.
+
+        if niter > 1 and beam_spacing == 0:
+            print("WARNING: Can't run multiple iterations using all pixels.")
+            print("\t Setting niter = 1 and continuing.")
+
         # Get the radial binning and deprojected radius and phi values.
 
-        rpnts, rbins = self._get_radial_bins(rpnts=rpnts, rbins=rbins)
-        rvals, pvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
-                                        psi=psi, r_cavity=r_cavity,
-                                        r_taper=r_taper, q_taper=q_taper,
-                                        w_i=w_i, w_r=w_r, w_t=w_t,
-                                        z_func=z_func, shadowed=shadowed)[:2]
+        rpnts, rbins = self._get_radial_bins(rpnts=rpnts,
+                                             rbins=rbins)
+
+        rvals, pvals = self.disk_coords(x0=x0,
+                                        y0=y0,
+                                        inc=inc,
+                                        PA=PA,
+                                        z0=z0,
+                                        psi=psi,
+                                        r_cavity=r_cavity,
+                                        r_taper=r_taper,
+                                        q_taper=q_taper,
+                                        z_func=z_func,
+                                        shadowed=shadowed)[:2]
+
+        # Empty lists to hold the results. `velo_proj` are the projected
+        # velocities, i.e., the {A, B, C} parameters from a SHO fit. `velo` are
+        # these values deprojected accounting for the disk inclination and
+        # rotation.
+
+        velo, dvelo = [], []
+        empty = [np.nan, np.nan, np.nan, np.nan]
 
         # Cycle through each annulus to include the fit.
 
-        fits, uncertainty = [], []
-        nparams = 2 + int(fit_vrad) - int(bool(fix_vlsr))
         for r_min, r_max in zip(rbins[:-1], rbins[1:]):
 
-            # Define the annulus mask. If there are no pixels in it, continue
-            # to the next annulus.
+            # Define the annulus mask. If there are no pixels in it, after
+            # removing all the NaNs values, continue to the next annulus.
 
             try:
-                mask = self.get_mask(r_min=r_min, r_max=r_max, phi_min=phi_min,
-                                     phi_max=phi_max, exclude_phi=exclude_phi,
-                                     abs_phi=abs_phi, x0=x0, y0=y0, inc=inc,
-                                     PA=PA, z0=z0, psi=psi, r_cavity=r_cavity,
-                                     r_taper=r_taper, q_taper=q_taper, w_i=w_i,
-                                     w_r=w_r, w_t=w_t, z_func=z_func,
-                                     shadowed=shadowed, mask_frame=mask_frame,
+                mask = self.get_mask(r_min=r_min,
+                                     r_max=r_max,
+                                     phi_min=phi_min,
+                                     phi_max=phi_max,
+                                     exclude_phi=exclude_phi,
+                                     abs_phi=abs_phi,
+                                     x0=x0,
+                                     y0=y0,
+                                     inc=inc,
+                                     PA=PA,
+                                     z0=z0,
+                                     psi=psi,
+                                     r_cavity=r_cavity,
+                                     r_taper=r_taper,
+                                     q_taper=q_taper,
+                                     z_func=z_func,
+                                     shadowed=shadowed,
+                                     mask_frame=mask_frame,
                                      user_mask=user_mask)
             except ValueError:
-                popt = np.ones(nparams) * np.nan
-                fits += [popt]
-                uncertainty += [popt]
+                velo += [empty]
+                dvelo += [empty]
                 continue
 
-            # Extract the finite pixels.
+            # Extract the finite pixels and order them in increase pval.
 
             x = pvals.copy()[mask].flatten()
             y = self.data.copy()[mask].flatten()
             dy = self.error.copy()[mask].flatten()
             isfinite = np.isfinite(y) & np.isfinite(dy)
             x, y, dy = x[isfinite], y[isfinite], dy[isfinite]
+            sorted = np.argsort(x)
+            x, y, dy = x[sorted], y[sorted], dy[sorted]
 
+<<<<<<< HEAD
             # Fit the pixels, and correct the radial velocity to have positive
             # velocities describining motions away from the star.
 
@@ -451,28 +513,114 @@ class rotationmap(datacube):
                                        fit_vrad=fit_vrad,
                                        fix_vlsr=fix_vlsr,
                                        optimize_kwargs=optimize_kwargs)
+=======
+            if len(x) < 2:
+                velo += [empty]
+                dvelo += [empty]
+                continue
+>>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
 
-            if fit_vrad and inc >= 0.0:
-                if fit_vrot:
-                    popt[1] *= -1.0
+            # Here we can include some sampling to mimic the `niter` command
+            # when using a full cube. If using `niter > 1` then the value and
+            # uncertainty returned will be the uncertainty-weighted average and
+            # standard deviation of the samples. If `niter = 1` is used,
+            # we just return the curve_fit values.
+
+            velo_tmp = []
+            dvelo_tmp = []
+
+            for _ in range(niter):
+
+                sampling = float(beam_spacing) * self.bmaj
+                sampling /= np.mean([r_min, r_max]) * np.median(np.diff(x))
+                sampling = np.floor(sampling).astype('int')
+                if sampling < 1 and beam_spacing > 0.0:
+                    print("Pixels appear to be spatially independent.")
+                    print("Will set `beam_spacing=0`.")
+                    beam_spacing = 0.0
+
+                if not beam_spacing:
+                    x_tmp, y_tmp, dy_tmp = x, y, dy
                 else:
-                    popt[0] *= -1.0
+                    start = np.random.randint(0, x.size)
+                    x_tmp = np.hstack([x[start:], x[:start]])[::sampling]
+                    y_tmp = np.hstack([y[start:], y[:start]])[::sampling]
+                    dy_tmp = np.hstack([dy[start:], dy[:start]])[::sampling]
 
-            fits += [popt]
-            uncertainty += [cvar]
+                # Fit the pixels, and correct the radial velocity to have
+                # positive velocities describining motions away from the star.
+                # Include the radial component (set to zero) if it wasn't
+                # considered and save these as projected velocities.
 
-        # Transform the arrays so they're in the shape (nparam, nrad).
+                try:
+                    popt, cvar = self._fit_SHO(x=x_tmp,
+                                               y=y_tmp,
+                                               dy=dy_tmp,
+                                               inc=inc,
+                                               fit_vrad=fit_vrad,
+                                               fix_vlsr=fix_vlsr,
+                                               MCMC=MCMC,
+                                               optimize_kwargs=optimize_kwargs)
+                except ValueError:
+                    velo_tmp += [empty]
+                    dvelo_tmp += [empty]
+                    continue
 
-        fits = np.atleast_2d(fits).T
-        uncertainty = np.atleast_2d(uncertainty).T
+                # Make sure that the values are populated so there is always
+                # four components: [v_rot, v_rad, v_alt, v_lsr].
 
-        # Build the linearly interpolated model.
+                velo_tmp += [[popt[0],
+                              popt[1] if fit_vrad else 0.0,
+                              0.0 if fix_vlsr is None else popt[-1],
+                              popt[-1] if fix_vlsr is None else fix_vlsr]]
+                dvelo_tmp += [[cvar[0],
+                               cvar[1] if fit_vrad else 0.0,
+                               0.0 if fix_vlsr is None else cvar[-1],
+                               cvar[-1] if fix_vlsr is None else 0.0]]
 
-        model = self._evaluate_annuli_model(rpnts=rpnts, fits=fits,
-                                            rvals=rvals, pvals=pvals,
-                                            fit_vrot=fit_vrot,
-                                            fit_vrad=fit_vrad,
-                                            fix_vlsr=fix_vlsr)
+            # Combine the values using a weighted average if niter > 1.
+            # velo_tmp.shape = [niter, 4]
+
+            velo_tmp = np.array(velo_tmp)
+            dvelo_tmp = np.array(dvelo_tmp)
+            if niter == 1:
+                velo += [velo_tmp[0]]
+                dvelo += [dvelo_tmp[0]]
+            elif niter > 1:
+                scatter = 1e-10 * np.random.randn(dvelo_tmp.size)
+                weights = np.where(dvelo_tmp != 0.0, 1.0 / dvelo_tmp, 0.0)
+                weights = weights + scatter.reshape(weights.shape)
+                w_mu = np.average(velo_tmp, weights=weights, axis=0)
+                wstd = np.sum(weights * (velo_tmp - w_mu[None, :])**2, axis=0)
+                wstd *= niter / (niter - 1.0) / np.sum(weights, axis=0)
+                wstd = np.sqrt(wstd)
+                velo += [w_mu]
+                dvelo += [wstd]
+            else:
+                raise ValueError("Unknown `niter` value.")
+
+        # Combine all the results into [4, rpnts] shaped arrays to deproject.
+
+        velo = np.atleast_2d(np.squeeze(velo)).T
+        dvelo = np.atleast_2d(np.squeeze(dvelo)).T
+        assert dvelo.shape == velo.shape
+        assert velo.shape[0] == 4
+
+        velo = np.where(np.isfinite(velo), velo, np.nan)
+        dvelo = np.where(np.isfinite(dvelo), dvelo, np.nan)
+
+        # Build the linearly interpolated model noting that the velocities need
+        # to be projected into the sky.
+
+        velo_proj = np.array([velo[0] * abs(np.sin(np.radians(inc))),
+                              velo[1] * -np.sin(np.radians(inc)),
+                              velo[2] * -np.cos(np.radians(inc)),
+                              velo[3]])
+
+        model = self._evaluate_annuli_model(rpnts=rpnts,
+                                            velo_proj=velo_proj,
+                                            rvals=rvals,
+                                            pvals=pvals)
 
         # Make the plots.
 
@@ -480,11 +628,8 @@ class rotationmap(datacube):
         plots = np.atleast_1d(plots)
         if 'profiles' in plots:
             self.plot_velocity_profiles(rpnts=rpnts,
-                                        fits=fits,
-                                        uncertainty=uncertainty,
-                                        fit_vrot=fit_vrot,
-                                        fit_vrad=fit_vrad,
-                                        fix_vlsr=fix_vlsr)
+                                        velo=velo,
+                                        dvelo=dvelo)
         if 'model' in plots:
             self.plot_model(model=model)
         if 'residual' in plots:
@@ -492,38 +637,53 @@ class rotationmap(datacube):
 
         # Generate the retuns.
 
+        to_return = []
         returns = ['profiles'] if returns is None else np.atleast_1d(returns)
         returns = np.atleast_1d(returns)
-        to_return = []
         if 'profiles' in returns:
-            to_return += [rpnts, fits, uncertainty]
+            to_return += [rpnts, velo, dvelo]
         if 'model' in returns:
             to_return += [model]
         if 'residual' in returns:
             to_return += [self.data - model]
         return to_return
 
+<<<<<<< HEAD
     def _evaluate_annuli_model(self, rpnts, fits, rvals, pvals, fit_vrot=True,
                                fit_vrad=True, fix_vlsr=False):
         """Evaluate the annuli models. Fits must not be deprojected."""
-        from scipy.interpolate import interp1d
-        idx = 0
-        if fit_vrot:
-            vrot = interp1d(rpnts, fits[idx], bounds_error=False)(rvals)
-            idx += 1
-        else:
-            vrot = 0.0
-        if fit_vrad:
-            vrad = interp1d(rpnts, fits[idx], bounds_error=False)(rvals)
-            idx += 1
-        else:
-            vrad = 0.0
-        if not fix_vlsr:
-            vlsr = interp1d(rpnts, fits[idx], bounds_error=False)(rvals)
-        else:
-            vlsr = fix_vlsr
-        return vrot * np.cos(pvals) + vrad * np.sin(pvals) + vlsr
+=======
+    def _evaluate_annuli_model(self, rpnts, velo_proj, rvals, pvals):
+        """
+        Evaluate the annuli models onto a 2D map. The velocity profiles must be
+        projected into the plane of the sky.
 
+        Args:
+            rpnts (array): A size M array of radial positions.
+            velo_proj (array): A [4xM] array containing the inferred velocity
+                coefficients from a double SHO fit.
+            rvals (array): A 2D array of on-sky radial positions in [arcsec].
+            pvals (array): A 2D array of on-sky polar angle in [radians].
+
+        Returns:
+            v0 (array): Model of the projected velocity in [m/s].
+        """
+>>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
+        from scipy.interpolate import interp1d
+        from .helper_functions import SHO_double
+        A = interp1d(rpnts, velo_proj[0], bounds_error=False)(rvals)
+        B = interp1d(rpnts, velo_proj[1], bounds_error=False)(rvals)
+        C = interp1d(rpnts, velo_proj[2] + velo_proj[3], bounds_error=False)(rvals)
+        return SHO_double(pvals, A, B, C)
+
+    def _fit_SHO(self, x, y, dy, inc, fit_vrad=True, fix_vlsr=None, MCMC=False,
+                 optimize_kwargs=None):
+        """
+        Fit the points with a simple harmonic oscillator. This should be a
+        duplication of `annulus.get_vlos_SHO`.
+        """
+
+<<<<<<< HEAD
     def _fit_SHO(self, x, y, dy, fit_vrot=True, fit_vrad=True, fix_vlsr=False,
                  optimize_kwargs=None):
         """Fit the points with a simple harmonic oscillator."""
@@ -578,14 +738,67 @@ class rotationmap(datacube):
                 nparam = 1
             else:
                 raise ValueError("You must fit one parameter!")
+=======
+        if MCMC: # IGNORE MCMC FOR NOW.
+            raise NotImplementedError()
 
-        # Returns if no values are provided.
+        from .helper_functions import SHO, SHO_double
+        from scipy.optimize import curve_fit
 
+        # Starting positions. Here we're using projected velocities such that
+        # A = vrot * sin(|i|), B = -vrad * sin(i) and C = vlsr - vz * cos(i).
+>>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
+
+        A, B, C = 0.5 * (y.max() - y.min()), 0.0, y.mean()
+        p0 = [A, C] if not fit_vrad else [A, B, C]
+
+<<<<<<< HEAD
         if len(y) == 0:
             popt = np.empty(nparam)
             cvar = popt.copy()
             return popt, cvar
 
+=======
+        # Set up curve_fit. TODO: Is there a better fitting routine than this?
+
+        optimize_kwargs = {} if optimize_kwargs is None else optimize_kwargs
+        optimize_kwargs['p0'] = p0
+        optimize_kwargs['sigma'] = dy
+        optimize_kwargs['absolute_sigma'] = True
+        optimize_kwargs['maxfev'] = optimize_kwargs.pop('maxfev', 10000)
+
+        # Run the optimization.
+
+        try:
+            popt, cvar = curve_fit(SHO_double if fit_vrad else SHO,
+                                   x, y, **optimize_kwargs)
+        except TypeError:
+            popt = np.empty(3 if fit_vrad else 2)
+            cvar = popt[:, None] * popt[None, :]
+        cvar = np.diag(cvar)**0.5
+
+        # Convert from projected velocities into disk-frame velocities.
+        # Note that C is only converted to vertical velocities if the systemic
+        # velocity is provided through `fix_vlsr`.
+
+        popt[0] /= abs(np.sin(np.radians(inc)))
+        cvar[0] /= abs(np.sin(np.radians(inc)))
+        if fit_vrad:
+            popt[1] /= -np.sin(np.radians(inc))
+            cvar[1] /= abs(np.sin(np.radians(inc)))
+        if fix_vlsr is not None:
+            popt[-1] = (fix_vlsr - popt[-1]) / np.cos(np.radians(inc))
+            cvar[-1] /= np.cos(np.radians(inc))
+
+        # Return the optimized, deprojected values.
+
+        return popt, cvar
+
+    def _SHO_chi2(self, x, y, dy, func, p0, optimize_kwargs=None):
+        """Use scipy.optimize.curve_fit for the fitting."""
+        from scipy.optimize import curve_fit
+
+>>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
         # Set up the optimization.
 
         kw = {} if optimize_kwargs is None else optimize_kwargs
@@ -638,7 +851,7 @@ class rotationmap(datacube):
             def prior(p):
                 if not min(args) <= p <= max(args):
                     return -np.inf
-                return np.log(1.0 / (args[1] - args[0]))
+                return max(-100.0, np.log(1.0 / (max(args) - min(args))))
         else:
             def prior(p):
                 return -0.5 * ((args[0] - p) / args[1])**2
@@ -752,21 +965,39 @@ class rotationmap(datacube):
             return lnp + self._ln_likelihood(model)
         return -np.inf
 
+    def _load_default_parameters(self, path='default_parameters.yml'):
+        """Load the default parameters."""
+        with open(__file__.replace('rotationmap.py', path)) as stream:
+            parameters = yaml.safe_load(stream)
+        for p in parameters.keys():
+            if parameters[p]['prior_type'] is not None:
+                values = parameters[p]['prior_values']
+                if len(values) == 1:
+                    parameters[p]['prior_values'] = [-values[0], values[0]]
+        return parameters
+
+    def print_default_prior(self, parameter):
+        """Print the default prior for a given parameter."""
+        try:
+            prior_type = self.default_parameters[parameter]['prior_type']
+            prior_values = self.default_parameters[parameter]['prior_values']
+            str = '`{}` has a '
+            if prior_type == 'flat':
+                str += '{} prior with a minimum value of {}'
+                str += ' and a maximum value {}.'
+            elif prior_type == 'gaussian':
+                str += '{} prior with mean of {}'
+                str += ' and standard deviation of {}.'
+            print(str.format(parameter, prior_type, *prior_values))
+        except KeyError:
+            print('`{}` is not a free parameter.'.format(parameter))
+
     def _set_default_priors(self):
         """Set the default priors."""
 
-        # Basic Geometry.
+        # fit_map functions
 
-        self.set_prior('x0', [-0.5, 0.5], 'flat')
-        self.set_prior('y0', [-0.5, 0.5], 'flat')
-        self.set_prior('inc', [-90.0, 90.0], 'flat')
-        self.set_prior('PA', [-360.0, 360.0], 'flat')
-        self.set_prior('mstar', [0.1, 5.0], 'flat')
-        self.set_prior('vlsr', [np.nanmin(self.data),
-                                np.nanmax(self.data)], 'flat')
-
-        # Emission Surface
-
+<<<<<<< HEAD
         self.set_prior('z0', [0.0, 5.0], 'flat')
         self.set_prior('psi', [0.0, 5.0], 'flat')
         self.set_prior('r_cavity', [0.0, 1e30], 'flat')
@@ -787,13 +1018,28 @@ class rotationmap(datacube):
         self.set_prior('vp_qtaper', [0.0, 5.0], 'flat')
         self.set_prior('vr_100', [-1e3, 1e3], 'flat')
         self.set_prior('vr_q', [-2.0, 2.0], 'flat')
+=======
+        for k in self.default_parameters.keys():
+            p = self.default_parameters[k]
+            if p['prior_type'] is not None:
+                self.set_prior(k, p['prior_values'], p['prior_type'])
+
+        # SHO functions.
+
+        self.set_SHO_prior('vrot', [-3e3, 3e3], 'flat')
+        self.set_SHO_prior('vrad', [-1e2, 1e2], 'flat')
+        self.set_SHO_prior('vlsr', [-1e4, 1e4], 'flat')
+>>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
 
     def _ln_prior(self, params):
         """Log-priors."""
         lnp = 0.0
         for key in params.keys():
             if key in rotationmap.priors.keys() and params[key] is not None:
-                lnp += rotationmap.priors[key](params[key])
+                try:
+                    lnp += rotationmap.priors[key](params[key])
+                except:
+                    print(key, params[key])
                 if not np.isfinite(lnp):
                     return lnp
         return lnp
@@ -830,7 +1076,8 @@ class rotationmap(datacube):
 
         # Velocity mask.
 
-        v_min, v_max = params['v_min'], params['v_max']
+        v_min = params.get('v_min', np.nanmin(self.data))
+        v_max = params.get('v_max', np.nanmax(self.data))
         mask_v = np.logical_and(self.data >= v_min, self.data <= v_max)
         mask_v = ~mask_v if params['exclude_v'] else mask_v
 
@@ -874,19 +1121,12 @@ class rotationmap(datacube):
         fitting. For non-essential parameters a default value is set.
         """
 
-        # Basic geometrical properties.
-
-        params['x0'] = params.pop('x0', 0.0)
-        params['y0'] = params.pop('y0', 0.0)
-        params['dist'] = params.pop('dist', 100.0)
-        params['vlsr'] = params.pop('vlsr', self.vlsr)
-        if params.get('inc', None) is None:
-            raise KeyError("Must provide `'inc'`.")
-        if params.get('PA', None) is None:
-            raise KeyError("Must provide `'PA'`.")
+        for p in self.default_parameters.keys():
+            params[p] = params.pop(p, self.default_parameters[p]['default'])
 
         # Rotation profile.
 
+<<<<<<< HEAD
         has_vp_100 = False if params.get('vp_100') is None else True
         has_mstar = False if params.get('mstar') is None else True
         if has_mstar and has_vp_100:
@@ -917,38 +1157,57 @@ class rotationmap(datacube):
         params['w_i'] = params.pop('w_i', 0.0)
         params['w_r'] = params.pop('w_r', 0.5 * max(self.xaxis))
         params['w_t'] = params.pop('w_t', 0.0)
+=======
+        if params['vp_100'] is not None:
+            if params['mstar'] is not None:
+                params['vfunc'] = self._vpow
+            else:
+                raise ValueError("Cannot specify both `vp_100` and `mstar`.")
+        else:
+            params['vfunc'] = self._vkep
+
+        # Deprojection properties.
+
+        params['z_func'] = params.pop('z_func', None)
+>>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
         params['shadowed'] = params.pop('shadowed', False)
 
         # Masking parameters.
 
-        params['r_min'] = params.pop('r_min', 0.0)
-        params['r_max'] = params.pop('r_max', 1e10)
-        params['exclude_r'] = params.pop('exclude_r', False)
-        params['phi_min'] = params.pop('phi_min', -180.0)
-        params['phi_max'] = params.pop('phi_max', 180.0)
-        params['exclude_phi'] = params.pop('exclude_phi', False)
-        params['abs_phi'] = params.pop('abs_phi', False)
-        params['v_min'] = params.pop('v_min', np.nanmin(self.data))
-        params['v_max'] = params.pop('v_max', np.nanmax(self.data))
-        params['exclude_v'] = params.pop('exclude_v', False)
+        # params['r_min'] = params.pop('r_min', 0.0)
+        # params['r_max'] = params.pop('r_max', 1e10)
+        # params['exclude_r'] = params.pop('exclude_r', False)
+        # params['phi_min'] = params.pop('phi_min', -180.0)
+        # params['phi_max'] = params.pop('phi_max', 180.0)
+        # params['exclude_phi'] = params.pop('exclude_phi', False)
+        # params['abs_phi'] = params.pop('abs_phi', False)
+        # params['v_min'] = params.pop('v_min', np.nanmin(self.data))
+        # params['v_max'] = params.pop('v_max', np.nanmax(self.data))
+        # params['exclude_v'] = params.pop('exclude_v', False)
         params['user_mask'] = params.pop('user_mask', np.ones(self.data.shape))
 
-        if params['r_min'] >= params['r_max']:
-            raise ValueError("`r_max` must be greater than `r_min`.")
-        if params['phi_min'] >= params['phi_max']:
-            raise ValueError("`phi_max` must be great than `phi_min`.")
-        if params['v_min'] >= params['v_max']:
-            raise ValueError("`v_max` must be greater than `v_min`.")
+        # if params['r_min'] >= params['r_max']:
+        #     raise ValueError("`r_max` must be greater than `r_min`.")
+        # if params['phi_min'] >= params['phi_max']:
+        #     raise ValueError("`phi_max` must be great than `phi_min`.")
+        # if params['v_min'] >= params['v_max']:
+        #     raise ValueError("`v_max` must be greater than `v_min`.")
 
         # Beam convolution.
 
-        params['beam'] = bool(params.pop('beam', False))
+        # params['beam'] = bool(params.pop('beam', False))
 
         return params
 
+<<<<<<< HEAD
 
     def evaluate_models(self, samples=None, params=None, draws=0.5,
                         collapse_func=np.mean, coords_only=False):
+=======
+    def evaluate_models(self, samples=None, params=None, draws=50,
+                        collapse_func=np.mean, coords_only=False,
+                        profile_only=False):
+>>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
         """
         Evaluate models based on the samples provided and the parameter
         dictionary. If ``draws`` is an integer, it represents the number of
@@ -1197,6 +1456,7 @@ class rotationmap(datacube):
 
     # -- VELOCITY PROJECTION -- #
 
+<<<<<<< HEAD
     def _v0(self, params):
         """Projected velocity structre."""
         rvals, tvals, zvals = self.disk_coords(**params)
@@ -1219,6 +1479,57 @@ class rotationmap(datacube):
         v_rad = (rvals * params['dist'] / 100.)**params['vr_q']
         v_rad = self._proj_vrad(params['vr_100'] * v_rad, tvals, params)
         return v_phi + v_rad
+=======
+    def _vkep(self, rvals, tvals, zvals, params):
+        """Keplerian rotation velocity."""
+        r_m = rvals * sc.au * params['dist']
+        z_m = zvals * sc.au * params['dist']
+        mtotal = params['mstar'] + self._calc_mdisk(rvals, params)
+        vkep = sc.G * mtotal * self.msun * np.power(r_m, 2)
+        return np.sqrt(vkep * np.power(np.hypot(r_m, z_m), -3))
+
+    def _calc_mdisk(self, rvals, params):
+        """Psuedo disk self-gravity component."""
+        if params['mdisk'] is None:
+            return 0.0
+        exponent = 2.0 - params['gamma']
+        rscale = rvals**exponent - params['r_in']**exponent
+        rscale /= params['r_out']**exponent - params['r_in']**exponent
+        return params['mdisk'] * np.clip(rscale, a_min=0.0, a_max=1.0)
+
+    def _vkep_pressure(self, rvals, tvals, zvals, params):
+        """Keplerian rotation velocity with pressure term."""
+        vkep = self._vkep(rvals, tvals, zvals, params)
+        r_p = params['r_pressure']
+        idx = np.unravel_index(abs(rvals - r_p).argmin(), rvals.shape)
+        dvprs = (1.0 - 1.5 * r_p**2 / (r_p**2 + zvals[idx]**2))
+        dvprs = ((rvals - r_p) / r_p) * dvprs + 1.0
+        vkep = np.where(rvals <= r_p, vkep, vkep[idx] * dvprs)
+        vkep = np.clip(vkep, a_min=0.0, a_max=None)
+        if params['w_pressure'] > 0.0:
+            taper = (rvals - r_p) / params['w_pressure']
+            taper = np.exp(-np.power(taper, 2.0))
+            vkep *= np.where(rvals <= r_p, 1.0, taper)
+        return vkep
+
+    def _vpow(self, rvals, tvals, zvals, params):
+        """Power-law rotation velocity profile."""
+        vpow = (rvals * params['dist'] / 100.)**params['vp_q']
+        return params['vp_100'] * vpow
+
+    def _vpow_pressure(self, rvals, tvals, zvals, params):
+        """Power-law rotation with pressure term."""
+        vpow = self._vpow(rvals, tvals, zvals, params)
+        r_p = params['r_pressure']
+        idx = np.unravel_index(abs(rvals - r_p).argmin(), rvals.shape)
+        dvprs = ((rvals - r_p) / r_p) * params['vp_q'] + 1.0
+        vpow = np.where(rvals <= r_p, vpow, vpow[idx] * dvprs)
+        if params['w_pressure'] > 0.0:
+            taper = (rvals - r_p) / params['w_pressure']
+            taper = np.exp(-np.power(taper, 2.0))
+            vpow *= np.where(rvals <= r_p, 1.0, taper)
+        return vpow
+>>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
 
     def _proj_vphi(self, v_phi, tvals, params):
         """Project the rotational velocity onto the sky."""
@@ -1255,6 +1566,7 @@ class rotationmap(datacube):
         v_z = np.where(zvals >= 0.0, -v_z, v_z)
         return v_p, v_r, v_z
 
+<<<<<<< HEAD
     # -- Functions for obtaining quantitative metrics of the velocity map. -- #
 
     def v_area(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=None, r_max=None,
@@ -1856,7 +2168,7 @@ class rotationmap(datacube):
         for i in range(min([len(s_px), len(s_mx)])):
             v_arr.append((pos_points[i] + minus_points[i])/(pos_points[i] - minus_points[i]))
             print("pos_points[i]", pos_points[i], "minus_points[i]", minus_points[i])
-            
+
         self.s_mx = s_mx
         self.s_my = s_my
         self.s_px = s_px
@@ -2084,6 +2396,60 @@ class rotationmap(datacube):
         hfr = np.nansum(data*distance_to_centre)/np.nansum(data)
 
         return hfr
+=======
+    # -- UTILITIES -- #
+
+    def remove_hot_pixels(self, npix=2, nsigma=1.0, niter=1, replace=True):
+        """
+        Remove hot pixels from the data. Hot pixels are identified by deviating
+        from the mean of the region +\- `npix` by an amount of at least `nsigma`
+        times the standard deviation of the region. These hot pixels are
+        replaced by interpolated (using a box kernel convolution) values.
+
+        Args:
+            npix (Optional[int]): The number of pixels from the pixel of
+                interest to consider part of the region.
+            nsigma (Optional[float]): The threshold for considering a pixel a
+                'hot' pixel. Smaller values identify more hot pixels.
+            niter (Optional[int]): How many times to repeat this smoothing. Note
+                that with `niter > 1` some features may be washed out.
+            replace (Optional[bool]): If `True`, replace the attached dataset,
+                otherwise, return as an array.
+
+        Returns:
+            corrected_data (array): The correced data if `replace=False`.
+        """
+        from astropy.convolution import convolve, Box2DKernel
+
+        data_tmp = self.data.copy()
+
+        for _ in range(niter):
+
+            # Cycle through each pixel and identify the hot pixels.
+
+            coldpix = np.ones(data_tmp.shape) * np.nan
+            for xi in np.arange(npix, self.nxpix - npix):
+                for yi in np.arange(npix, self.nypix - npix):
+                    point = data_tmp[yi, xi]
+                    region = data_tmp[yi-npix:yi+npix+1, xi-npix:xi+npix+1]
+                    region_mu = np.nanmean(region)
+                    region_std = np.nanstd(region)
+                    if abs(point - region_mu) < (nsigma * region_std):
+                        coldpix[yi, xi] = point
+
+            # Convolve, interpolating the NaN value, and re-mask based on the
+            # old data.
+
+            hotpix = np.logical_and(np.isfinite(self.data), np.isnan(coldpix))
+            coldpix = convolve(coldpix, Box2DKernel(2*npix+1))
+            data_tmp = np.where(hotpix, coldpix, data_tmp)
+
+        # Either replace the attached data or return as an array.
+
+        if not replace:
+            return data_tmp
+        self.data = data_tmp
+>>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
 
     # -- Functions to help determine the emission height. -- #
 
@@ -2336,87 +2702,85 @@ class rotationmap(datacube):
                 print("Change this at any time with `rotationmap.error`.")
                 self.error = 0.1 * (self.data - np.nanmedian(self.data))
         self.error = np.where(np.isnan(self.error), 0.0, abs(self.error))
+        self.error *= 1e3 if self.velocity_unit == 'km/s' else 1.0
         assert self.data.shape == self.error.shape
 
     # -- PLOTTING -- #
 
-    def plot_velocity_profiles(self, rpnts, fits, uncertainty, fit_vrot=True,
-                               fit_vrad=True, fix_vlsr=False):
+    def plot_velocity_profiles(self, rpnts, velo, dvelo):
         """
-        Plot the velocity profiles.
+        Plot the velocity profiles. The `velo` array must specify
+        ``[v_phi, v_r, v_z, v_lsr]`` in that order.
 
         Args:
             rpnts (array): Array of the annulus centers.
-            fits (ndarray): Array of the velocity profiles with a shape of
+            velo (ndarray): Array of the velocity profiles with a shape of
                 ``(nparam, nannuli)``.
-            uncertainy (ndarray): Array of the uncertainties of the velocity
+            dvelo (ndarray): Array of the uncertainties of the velocity
                 profiles with the same shape as ``fits``.
-            fit_vrot (Optional[bool]): Whether to include rotational velocities
-                in the fit. Default is ``True``.
-            fit_vrad (Optional[bool]): Whether to include radial velocities in
-                    the fit. Default is ``True``.
-            fix_vlsr (bool/float): Whether the system velocity was fixed (and
-                so should be a ``float``), or if it was left free (``False``).
         """
-
-        # Unpack the velocity profiles. If parameters are fixed, their
-        # uncertainties are NaNs.
-
-        idx = 0
-        if fit_vrot:
-            v_phi, dv_phi = fits[idx], uncertainty[idx]
-            mu = np.nanmedian(v_phi)
-            std = np.nanpercentile(v_phi, [16, 84])
-            std = 0.5 * (std[1] - std[0])
-            v_phi_ylim = np.nanpercentile(v_phi, [2, 98])
-            idx += 1
-        else:
-            v_phi = np.zeros(fits.shape[-1])
-            dv_phi = v_phi.copy() * np.nan
-            v_phi_ylim = None
-
-        if fit_vrad:
-            v_rad, dv_rad = fits[idx], uncertainty[idx]
-            mu = np.nanmedian(v_rad)
-            std = np.nanpercentile(v_rad, [16, 84])
-            std = 0.5 * (std[1] - std[0])
-            v_rad_ylim = (mu - 3.0 * std, mu + 3.0 * std)
-            idx += 1
-        else:
-            v_rad = np.zeros(fits.shape[-1])
-            dv_rad = v_rad.copy() * np.nan
-            v_rad_ylim = None
-
-        if not fix_vlsr:
-            v_lsr, dv_lsr = fits[idx], uncertainty[idx]
-            mu = np.nanmedian(v_lsr)
-            std = np.nanpercentile(v_lsr, [16, 84])
-            std = 0.5 * (std[1] - std[0])
-            v_lsr_ylim = (mu - 3.0 * std, mu + 3.0 * std)
-        else:
-            v_lsr = np.ones(v_phi.size) * fix_vlsr
-            dv_lsr = np.ones(v_phi.size) * np.nan
-            v_lsr_ylim = None
 
         # Make the axes.
 
         fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(6.75, 6.25))
-        axs[0].errorbar(rpnts, v_phi, dv_phi, fmt='-o', ms=3)
+
+        # Plot the rotational velocities.
+
+        v_phi, dv_phi = velo[0], dvelo[0]
+        v_phi_ylim = np.nanpercentile(v_phi / 1e3, [2, 98])
+
+        axs[0].errorbar(rpnts, v_phi / 1e3, dv_phi / 1e3, fmt='-o', ms=3)
         axs[0].set_xlabel(r'Radius (arcsec)', labelpad=8)
         axs[0].xaxis.set_label_position('top')
         axs[0].xaxis.tick_top()
-        axs[0].set_ylabel(r'$v_{\rm \phi,\, proj}$' + ' (m/s)')
+        axs[0].set_ylabel(r'$v_{\rm \phi}$' + ' (km/s)')
         axs[0].set_ylim(v_phi_ylim)
+
+        # Plot the radial velocities.
+
+        v_rad, dv_rad = velo[1], dvelo[1]
+        std = np.nanpercentile(v_rad, [16, 84])
+        std = 0.5 * (std[1] - std[0])
+        v_rad_ylim = (-3.0 * std, 3.0 * std)
 
         axs[1].errorbar(rpnts, v_rad, dv_rad, fmt='-o', ms=3)
         axs[1].set_xticklabels([])
-        axs[1].set_ylabel(r'$v_{\rm rad,\, proj}$' + ' (m/s)')
+        axs[1].set_ylabel(r'$v_{\rm r}$' + ' (m/s)')
         axs[1].set_ylim(v_rad_ylim)
+        axs[1].text(0.975, 0.925, 'away from star', ha='right', va='top',
+                    transform=axs[1].transAxes, color='0.5')
+        axs[1].text(0.975, 0.075, 'towards star', ha='right', va='bottom',
+                    transform=axs[1].transAxes, color='0.5')
 
-        axs[2].errorbar(rpnts, v_lsr, dv_lsr, fmt='-o', ms=3)
+        # Plot the vertical / systemic velocities. Note the change between the
+        # y-axis label depending of if we're plotting just the vertical velocity
+        # components, or the combined values.
+
+        if np.nanmean(velo[2]) == 0.0 and np.nanstd(velo[2]) < 1e-4:
+            v_alt, dv_alt = velo[3], dvelo[3]
+            axs[2].set_ylabel(r'$v_{\rm LSR} - v_{\rm z} / \cos(i)$' + ' (m/s)')
+            mu = np.nanmedian(v_alt)
+        elif np.nanstd(velo[3]) < 1e-4:
+            v_alt, dv_alt = velo[2], dvelo[2]
+            axs[2].set_ylabel(r'$v_{\rm z}$' + ' (m/s)')
+            label = r'$v_{\rm LSR} = $' + ' {:.0f} m/s'.format(velo[3, 0])
+            axs[2].text(0.025, 0.925, label, ha='left', va='top',
+                        transform=axs[2].transAxes, color='0.5')
+            axs[2].text(0.975, 0.925, 'away from midplane', ha='right',
+                        va='top', transform=axs[2].transAxes, color='0.5')
+            axs[2].text(0.975, 0.075, 'towards midplane', ha='right',
+                        va='bottom', transform=axs[2].transAxes, color='0.5')
+            mu = 0.0
+        else:
+            raise ValueError("Struggling to parse the `velo` arrays.")
+
+        std = np.nanpercentile(v_alt, [16, 84])
+        std = 0.5 * (std[1] - std[0])
+        v_alt_ylim = (mu - 3.0 * std, mu + 3.0 * std)
+
+        axs[2].errorbar(rpnts, v_alt, dv_alt, fmt='-o', ms=3)
         axs[2].set_xlabel(r'Radius (arcsec)')
-        axs[2].set_ylabel(r'$v_{\rm lsr}$' + ' (m/s)')
-        axs[2].set_ylim(v_lsr_ylim)
+        axs[2].set_ylim(v_alt_ylim)
 
         for ax in axs:
             ax.grid(ls='--', color='0.9', lw=1.0)
@@ -2457,14 +2821,15 @@ class rotationmap(datacube):
         if ax is None:
             fig, ax = plt.subplots()
 
-        # Make the model and calculate the plotting limits.
+        # Make the model and calculate the plotting limits. Note that we assume
+        # the input model is in [m/s] and we convert to [km/s].
 
         if model is None:
             model = self.evaluate_models(samples, params.copy(), draws=draws)
-        vmin, vmax = np.nanpercentile(model, [2, 98])
-        vmax = max(abs(vmin - self.vlsr), abs(vmax - self.vlsr))
-        vmin = self.vlsr - vmax
-        vmax = self.vlsr + vmax
+        vmin, vmax = np.nanpercentile(model / 1e3, [2, 98])
+        vmax = max(abs(vmin - self.vlsr / 1e3), abs(vmax - self.vlsr / 1e3))
+        vmin = self.vlsr / 1e3 - vmax
+        vmax = self.vlsr / 1e3 + vmax
 
         # Initialize the plotting parameters.
 
@@ -2475,7 +2840,7 @@ class rotationmap(datacube):
         imshow_kwargs['origin'] = 'lower'
         imshow_kwargs['vmin'] = imshow_kwargs.pop('vmin', vmin)
         imshow_kwargs['vmax'] = imshow_kwargs.pop('vmax', vmax)
-        im = ax.imshow(model, **imshow_kwargs)
+        im = ax.imshow(model / 1e3, **imshow_kwargs)
 
         # Overplot the mask if necessary.
 
@@ -2486,7 +2851,7 @@ class rotationmap(datacube):
                         [-1.0, 0.0], colors='k', alpha=0.5)
 
         if cb_label is None:
-            cb_label = r'${\rm v_{0} \quad (m\,s^{-1})}$'
+            cb_label = r'${\rm v_{0,\,{\rm mod}} \quad (km\,s^{-1})}$'
         if cb_label != '':
             cb = plt.colorbar(im, pad=0.03, format='%.2f', extend='both')
             cb.set_label(cb_label, rotation=270, labelpad=15)
@@ -2566,7 +2931,7 @@ class rotationmap(datacube):
                         [-1.0, 0.0], colors='k', alpha=0.5)
 
         cb = plt.colorbar(im, pad=0.02, format='%d', ax=ax, extend='both')
-        cb.set_label(r'${\rm  v_{0} - v_{mod} \quad (m\,s^{-1})}$',
+        cb.set_label(r'${\rm  v_{0} - v_{0,\,{\rm mod}} \quad (m\,s^{-1})}$',
                      rotation=270, labelpad=15)
         cb.minorticks_on()
 
@@ -2616,6 +2981,38 @@ class rotationmap(datacube):
         model.pop('r_max')
         fig = self.plot_surface(**model, **plot_surface_kwargs)
         self._gentrify_plot(ax=fig.axes[0])
+
+        if return_fig:
+            return fig
+
+    def plot_model_surface_2D(self, samples, params, draws=50, return_fig=True):
+        """
+        Plot the model surface in the (r, z) plane.
+
+        Args:
+            samples (ndarray): An array of samples returned from ``fit_map``.
+            params (dict): The parameter dictionary passed to ``fit_map``.
+            drawns (Optional[int]): Number of draws from the posterior to plot.
+            return_fig (Optional[bool]): Return the figure.
+
+        Returns:
+            fig (Matplotlib figure): If ``return_fig`` is ``True``. Can access
+                the axes through ``fig.axes`` for additional plotting.
+        """
+
+        r, _, z = self.evaluate_models(samples=samples,
+                                       params=params,
+                                       draws=draws,
+                                       coords_only=True,
+                                       )
+        rvals, rbins = self._get_radial_bins()
+        ridxs = np.digitize(rbins, r)
+        zvals = np.array([np.mean(z[ridxs == r]) for r in ridxs])
+
+        fig, ax = plt.subplots()
+        ax.plot(rvals, zvals)
+        ax.set_xlabel('Radius (arcsec')
+        ax.set_ylabel('Height (arcsec)')
 
         if return_fig:
             return fig

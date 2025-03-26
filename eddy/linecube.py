@@ -17,23 +17,23 @@ class linecube(datacube):
         FOV (Optional[float]): If specified, clip the data down to a
             square field of view with sides of `FOV` [arcsec].
         fill (Optional[float/None]): Value to fill any NaN values.
+        velocity_range (Optional[list]): A velocity range in [m/s] to
+            clip the data down to: ``[min_velo, max_velo]``.
     """
 
-    def __init__(self, path, FOV=None, fill=0.0):
-        datacube.__init__(self, path=path, FOV=FOV, fill=fill)
+    def __init__(self, path, FOV=None, fill=0.0, velocity_range=None):
+        datacube.__init__(self, path=path, FOV=FOV, fill=fill,
+                          velocity_range=velocity_range)
 
     # -- ROTATION PROFILE FUNCTIONS -- #
 
     def get_velocity_profile(self, rbins=None, fit_method='GP', fit_vrad=False,
-                             x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=None,
-                             psi=None, r_cavity=None, r_taper=None,
-                             q_taper=None, w_i=None, w_r=None, w_t=None,
-                             z_func=None, shadowed=False, phi_min=None,
-                             phi_max=None, exclude_phi=False, abs_phi=False,
-                             mask_frame='disk', user_mask=None,
-                             beam_spacing=True, deproject=False, niter=1,
-                             get_vlos_kwargs=None, weighted_average=True,
-                             return_samples=False):
+            fix_vlsr=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
+            r_cavity=0.0, r_taper=np.inf, q_taper=1.0, w_i=None, w_r=None,
+            w_t=None, z_func=None, shadowed=False, phi_min=None, phi_max=None,
+            exclude_phi=False, abs_phi=False, mask_frame='disk', user_mask=None,
+            beam_spacing=True, niter=1, get_vlos_kwargs=None,
+            weighted_average=True, return_samples=False):
         """
         Returns the rotational and, optionally, radial velocity profiles under
         the assumption that the disk is azimuthally symmetric (at least across
@@ -67,6 +67,9 @@ class linecube(datacube):
             fit_method (Optional[str]): Method used to infer the velocities.
             fit_vrad (Optional[bool]): Whether to include radial velocities in
                 the fit.
+            fix_vlsr (optional[bool]): Fix the systemic velocity to calculate
+                the deprojected vertical velocities. Only available for
+                `fit_method='SHO'`.
             x0 (Optional[float]): Source right ascension offset [arcsec].
             y0 (Optional[float]): Source declination offset [arcsec].
             inc (Optional[float]): Source inclination [degrees]. A positive
@@ -78,32 +81,48 @@ class linecube(datacube):
             z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
                 To get the far side of the disk, make this number negative.
             psi (Optional[float]): Flaring angle for the emission surface.
-            z1 (Optional[float]): Correction term for ``z0``.
-            phi (Optional[float]): Flaring angle correction term for the
-                emission surface.
             r_cavity (Optional[float]): Outer radius of a cavity. Within this
                 region the emission surface is taken to be zero.
             w_i (Optional[float]): Warp inclination in [degrees] at the disk
                 center.
             w_r (Optional[float]): Scale radius of the warp in [arcsec].
             w_t (Optional[float]): Angle of nodes of the warp in [degrees].
-            z_func=None,
-            shadowed=False,
-            phi_min=None,
-            phi_max=None,
-            exclude_phi=False,
-            abs_phi=False,
-            mask_frame='disk',
-            user_mask=None,
-            beam_spacing=True,
-            deproject=False,
-            niter=1,
+            z_func (Optional[function]): A function which provides
+                :math:`z(r)`. Note that no checking will occur to make sure
+                this is a valid function.
+            shadowed (Optional[bool]): Whether to use the slower, but more
+                robust, deprojection method for shadowed disks.
+            phi_min (Optional[float]): Minimum polar angle of the segment of
+                the annulus in [deg]. Note this is the polar angle, not the
+                position angle.
+            phi_max (Optional[float]): Maximum polar angle of the segment of
+                the annulus in [deg]. Note this is the polar angle, not the
+                position angle.
+            exclude_phi (Optional[bool]): If ``True``, exclude the provided
+                polar angle range rather than include it.
+            abs_phi (Optional[bool]): If ``True``, take the absolute value of
+                the polar angle such that it runs from 0 [deg] to 180 [deg].
+            mask_frame (Optional[str]): Which frame to specify the mask in,
+                either ``'disk'``, the default, or ``'sky'``.
+            user_mask (Optional[array]): A user-specified mask to include. Must
+                have the same shape as ``self.data``.
+            beam_spacing (int): Sample pixels separated by roughly
+            `beam_spacing * bmaj` in azimuthal distance.
+            niter (Optional[int]): Number of iterations to run.
             get_vlos_kwargs=None,
-            weighted_average=True,
-            return_samples=False
+            weighted_average (Optional[bool]): Whether to combine multiple
+                iterations with a weighted average and standard deviation,
+                ``weighted_average=True``, or the traditional mean and standard
+                deviation, ``weighted_average=False``.
+            return_samples (Optional[bool]): Whether to return the samples
+                instead of combining them.
 
         Returns:
-            TBD
+            samples (array): If ``return_samples=True``. The array of ``niter``
+                samples of the velocity profiles.
+            rvals, profile, uncertainty (array, array, array): If
+                ``return_samples=False``. The arrays of radial locations and
+                combined velocity and uncertainties.
         """
 
         if niter == 0:
@@ -115,6 +134,7 @@ class linecube(datacube):
             return self._velocity_profile(rbins=rbins,
                                           fit_method=fit_method,
                                           fit_vrad=fit_vrad,
+                                          fix_vlsr=fix_vlsr,
                                           x0=x0,
                                           y0=y0,
                                           inc=inc,
@@ -146,6 +166,7 @@ class linecube(datacube):
         samples = [self._velocity_profile(rbins=rbins,
                                           fit_method=fit_method,
                                           fit_vrad=fit_vrad,
+                                          fix_vlsr=fix_vlsr,
                                           x0=x0,
                                           y0=y0,
                                           inc=inc,
@@ -170,22 +191,29 @@ class linecube(datacube):
                                           get_vlos_kwargs=get_vlos_kwargs)
                    for _ in range(niter)]
 
-        # Just return the samples.
+        # Just return the samples if requested.
 
         if return_samples:
             return samples
+        
         rpnts = samples[0][0]
         profiles = np.array([s[1] for s in samples])
 
-        # Calculate weights.
+        # Calculate weights, making sure they are finite and not all summing to
+        # zero.
 
         if weighted_average:
             weights = [1.0 / s[2] for s in samples]
             weights = np.where(np.isfinite(weights), weights, 0.0)
         else:
             weights = np.ones(profiles.shape)
+
         if np.all(np.sum(weights, axis=0) == 0.0):
             weights = np.ones(profiles.shape)
+        
+        weights = np.where(np.isfinite(weights), weights, 1.0)
+        weights += 1e-10 * np.random.randn(weights.size).reshape(weights.shape)
+        
         M = np.sum(weights != 0.0, axis=0)
 
         # Weighted average.
@@ -198,17 +226,24 @@ class linecube(datacube):
         uncertainty = np.sum(uncertainty, axis=0)
         uncertainty /= (M - 1.0) / M * np.sum(weights, axis=0)
         uncertainty = np.sqrt(uncertainty)
+
         return rpnts, profile, uncertainty
 
     def _velocity_profile(self, rbins=None, fit_method='GP', fit_vrad=False,
-                          x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=None,
-                          psi=None, r_cavity=None, r_taper=None, q_taper=None,
-                          w_i=None, w_r=None, w_t=None, z_func=None,
-                          shadowed=False, phi_min=None, phi_max=None,
-                          exclude_phi=False, abs_phi=False, mask_frame='disk',
-                          user_mask=None, beam_spacing=True, deproject=False,
-                          get_vlos_kwargs=None):
-        """Returns the velocity (rotational and radial) profiles."""
+            fix_vlsr=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
+            r_cavity=0.0,  r_taper=np.inf, q_taper=1.0, w_i=None, w_r=None,
+            w_t=None, z_func=None, shadowed=False, phi_min=None, phi_max=None,
+            exclude_phi=False, abs_phi=False, mask_frame='disk',
+            user_mask=None, beam_spacing=True, get_vlos_kwargs=None):
+        """
+        Returns the velocity (rotational and radial) profiles.
+
+        Args:
+            TBD
+
+        Returns:
+            TBD
+        """
 
         # Define the radial binning.
 
@@ -219,7 +254,8 @@ class linecube(datacube):
         # Set up the kwargs for the fitting.
 
         kw = {} if get_vlos_kwargs is None else get_vlos_kwargs
-        kw['fit_vrad'] = kw.pop('fit_vrad', fit_vrad)
+        kw['fit_vrad'] = fit_vrad
+        kw['fix_vlsr'] = fix_vlsr
         kw['fit_method'] = fit_method
 
         # Cycle through the annuli.
@@ -274,20 +310,14 @@ class linecube(datacube):
             profiles = profiles.T
             uncertainties = uncertainties.T
 
-        # Deproject the velocity profiles.
-
-        if deproject:
-            profiles /= np.sin(np.radians(abs(inc)))
-            uncertainties /= np.sin(np.radians(abs(inc)))
-
         return rpnts, profiles, uncertainties
 
     # -- ANNULUS FUNCTIONS -- #
 
     def get_annulus(self, r_min, r_max, phi_min=None, phi_max=None,
                     exclude_phi=False, abs_phi=False, x0=0.0, y0=0.0, inc=0.0,
-                    PA=0.0, z0=None, psi=None, r_cavity=None, r_taper=None,
-                    q_taper=None, w_i=None, w_r=None, w_t=None, z_func=None,
+                    PA=0.0, z0=0.0, psi=1.0, r_cavity=0.0, r_taper=np.inf,
+                    q_taper=1.0, w_i=None, w_r=None, w_t=None, z_func=None,
                     shadowed=False, mask_frame='disk', user_mask=None,
                     beam_spacing=True, annulus_kwargs=None):
         """
@@ -350,50 +380,15 @@ class linecube(datacube):
         # Return the annulus instance.
 
         annulus_kwargs = {} if annulus_kwargs is None else annulus_kwargs
-        return annulus(spectra=dvals, pvals=pvals, velax=self.velax,
-                       rotation='clockwise' if inc >= 0.0 else 'anticlockwise',
+        return annulus(spectra=dvals, pvals=pvals, velax=self.velax, inc=inc,
                        **annulus_kwargs)
-
-    def _independent_samples(self, beam_spacing, rvals, pvals, dvals):
-        """Returns spatially independent samples."""
-
-        if not beam_spacing:
-            return rvals, pvals, dvals
-
-        # Order pixels in increasing phi.
-
-        idxs = np.argsort(pvals)
-        dvals, pvals = dvals[idxs], pvals[idxs]
-
-        # Calculate the sampling rate.
-
-        sampling = float(beam_spacing) * self.bmaj
-        sampling /= np.mean(rvals) * np.median(np.diff(pvals))
-        sampling = np.floor(sampling).astype('int')
-
-        # If the sampling rate is above 1, start at a random location in
-        # the array and sample at this rate, otherwise don't sample. This
-        # happens at small radii, for example.
-
-        if sampling > 1:
-            start = np.random.randint(0, pvals.size)
-            rvals = np.concatenate([rvals[start:], rvals[:start]])
-            pvals = np.concatenate([pvals[start:], pvals[:start]])
-            dvals = np.vstack([dvals[start:], dvals[:start]])
-            rvals = rvals[::sampling]
-            pvals = pvals[::sampling]
-            dvals = dvals[::sampling]
-        else:
-            print("Pixels appear to be close to spatially independent.")
-
-        return rvals, pvals, dvals
 
     # -- PLOTTING FUNCTIONS -- #
 
     def plot_mask(self, ax, r_min=None, r_max=None, exclude_r=False,
                   phi_min=None, phi_max=None, exclude_phi=False, abs_phi=False,
                   mask_frame='disk', mask=None, x0=0.0, y0=0.0, inc=0.0,
-                  PA=0.0, z0=None, psi=None, r_cavity=None, r_taper=None,
+                  PA=0.0, z0=0.0, psi=1.0, r_cavity=None, r_taper=None,
                   q_taper=None, w_i=None, w_r=None, w_t=None, z_func=None,
                   mask_color='k', mask_alpha=0.5, contour_kwargs=None,
                   contourf_kwargs=None, shadowed=False):
@@ -429,9 +424,6 @@ class linecube(datacube):
             z0 (Optional[float]): Emission height in [arcsec] at a radius of
                 1".
             psi (Optional[float]): Flaring angle of the emission surface.
-            z1 (Optional[float]): Correction to emission height at 1" in
-                [arcsec].
-            phi (Optional[float]): Flaring angle correction term.
             z_func (Optional[function]): A function which provides
                 :math:`z(r)`. Note that no checking will occur to make sure
                 this is a valid function.
@@ -473,3 +465,112 @@ class linecube(datacube):
 
         ax.contourf(self.xaxis, self.yaxis, mask, [-.5, .5], **contourf_kwargs)
         ax.contour(self.xaxis, self.yaxis, mask, 1, **contour_kwargs)
+
+    def get_spectrum(self, coords, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
+                     z0=0.0, psi=1.0, z_func=None, frame='sky',
+                     coord_type='cartesian', area=0.0, beam_weighting=False,
+                     return_mask=False):
+        """
+        Return a spectrum at a position defined by a coordinates given either
+        in sky-frame position (``frame='sky'``) or a disk-frame location
+        (``frame='disk'``). The coordinates can be either in a cartesian system
+        (``coord_type='cartesian'``) or cylindrical system
+        (``coord_type='cylindrical'``).
+
+        By default the returned spectrum is extracted at the pixel closest to
+        the provided coordinates. If ``area`` is set to a positive value, then
+        a beam-shaped area is averaged over, where ``area`` sets the size of
+        this region in number of beams. For example ``area=2.0`` will result
+        in an average over an area twice the size of the beam.
+
+        If an area is averaged over, you can also weight the pixels by the beam
+        response with ``beam_weighting=True``. This will reduce the weight of
+        pixels that are further away from the beam center.
+
+         Finally, to check that you're extracting what you think you are, you
+         can return the mask (and weights) used for the extraction with
+         ``return_mask=True``. Note that if ``beam_weighting=False`` then all
+         ``weights`` will be 1.
+
+         TODO: Check that the returned uncertainties are reasonable.
+
+        Args:
+            coords (tuple): The coordinates from where you want to extract a
+                spectrum. Must be a length 2 tuple.
+            x0 (Optional[float]): RA offset in [arcsec].
+            y0 (Optional[float]): Dec offset in [arcsec].
+            inc (Optional[float]): Inclination of source in [deg]. Only
+                required for ``frame='disk'``.
+            PA (Optional[float]): Position angle of source in [deg]. Only
+                required for ``frame='disk'``.
+            frame (Optional[str]): The frame that the ``coords`` are given.
+                Either ``'disk'`` or ``'sky'``.
+            coord_type (Optional[str]): The type of coordinates given, either
+                ``'cartesian'`` or ``'cylindrical'``.
+            area (Optional[float]): The area to average over in units of the
+                beam area. Note that this take into account the beam aspect
+                ratio and position angle. For a single pixel extraction use
+                ``area=0.0``.
+            beam_weighting (Optional[bool]): Whether to use the beam response
+                function to weight the averaging of the spectrum.
+            return_mask (Optional[bool]): Whether to return the mask and
+                weights used to extract the spectrum.
+
+        Retuns (if ``return_mask=False``):
+            x, y, dy (arrays): The velocity axis, extracted spectrum and
+            associated uncertainties.
+        (if ``return_mask=True``):
+            mask, weights (arrays): Arrays of the mask used to extract the
+            spectrum and the weighted used for the averaging.
+        """
+
+        # TODO:
+        #   1 - Check if it's three coordinates, or just two.
+        #   2 - Check which frame it's in.
+
+        # Convert the input coordinate into on-sky cartesian coordinates
+        # relative to the center of the image.
+
+        if frame.lower() == 'sky':
+            if inc != 0.0 or PA != 0.0:
+                message = "WARNING: You shouldn't need to specify `inc` or "
+                message += "`PA` when using `frame='sky'`."
+                print(message)
+            c1 = np.squeeze(coords[0])
+            c2 = np.squeeze(coords[1])
+            if coord_type.lower() == 'cartesian':
+                x, y = c1 + x0, c2 + y0
+            elif coord_type.lower() == 'cylindrical':
+                x = x0 + c1 * np.cos(c2 - np.radians(90.0))
+                y = y0 - c1 * np.sin(c2 - np.radians(90.0))
+        elif frame.lower() == 'disk':
+            x, y = self.disk_to_sky(coords=coords, coord_type=coord_type,
+                                    inc=inc, PA=PA, x0=x0, y0=y0)
+        assert x.size == y.size == 1
+
+        # Define the area to average over.
+
+        if area == 0.0:
+            x_pix = abs(self.xaxis - x).argmin()
+            y_pix = abs(self.yaxis - y).argmin()
+            mask = np.zeros(self.data[0].shape)
+            weights = np.zeros(mask.shape)
+            mask[y_pix, x_pix] = 1
+            weights[y_pix, x_pix] = 1
+        elif area > 0.0:
+            mask = self._beam_mask(x, y, stretch=area)
+            weights = self._beam_mask(x, y, stretch=area, response=True)
+        else:
+            raise ValueError("`area` must be a non-negative value.")
+        weights = weights if beam_weighting else mask
+
+        # If requested, return the mask and the weighting instead.
+
+        if return_mask:
+            return mask, weights
+
+        # Otherwise, extract the spectrum and average it.
+
+        y = [np.average(c * mask, weights=weights) for c in self.data]
+        dy = max(1.0, mask.sum() * self.beams_per_pix)**-0.5 * self.rms
+        return self.velax, np.array(y), np.array([dy for _ in y])

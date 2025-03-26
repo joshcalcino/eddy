@@ -1,9 +1,23 @@
-# eddy - Extracting Disk DYnamics
+# eddy - Extracting Disk Dynamics
 
-[![status](http://joss.theoj.org/papers/2868c5ad4b6405eba1aaf1cd8ea53274/status.svg)](http://joss.theoj.org/papers/2868c5ad4b6405eba1aaf1cd8ea53274)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.1440051.svg)](https://doi.org/10.5281/zenodo.1440051)
-<a href="http://ascl.net/1901.010"><img src="https://img.shields.io/badge/ascl-1901.010-blue.svg?colorB=262255" alt="ascl:1901.010" /></a>
-[![Documentation Status](https://readthedocs.org/projects/eddy/badge/?version=latest)](https://eddy.readthedocs.io/en/latest/?badge=latest)
+<p align='center'>
+  <br/>
+  <img src="https://github.com/richteague/eddy/blob/master/docs/_static/eddy_logo.png" width="500" height="500">
+  <br/>
+  <br/>
+  <a href="http://joss.theoj.org/papers/2868c5ad4b6405eba1aaf1cd8ea53274"><img src="http://joss.theoj.org/papers/2868c5ad4b6405eba1aaf1cd8ea53274/status.svg">
+  </a>
+  <a href='https://eddy.readthedocs.io/en/latest/?badge=latest'><img src='https://readthedocs.org/projects/eddy/badge/?version=latest' alt='Documentation Status' />
+  </a>
+  <a href="https://doi.org/10.5281/zenodo.1440051"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.1440051.svg" alt="DOI" />
+  </a>
+  <a href="http://ascl.net/1901.010"><img src="https://img.shields.io/badge/ascl-1901.010-blue.svg?colorB=262255" alt="ascl:1901.010" />
+  </a>
+  <br/>
+  <br/>
+</p>
+
+## What Is It?
 
 `eddy` is a suite of Python tools to recover precise velocity profiles of protoplanetary disks from Doppler shifted line emission. `eddy` makes fitting of first moment maps and the inference of a rotation velocity from an annulus of spectra a breeze.
 
@@ -45,6 +59,6 @@ If you use `eddy` as part of your research, please cite the [JOSS article](http:
 
 A full list of citations including dependencies can be found on the [citations](./docs/citations.md) page.
 
-## Works using `eddy`
+## Works Using `eddy`
 
 A list of the works using (or at least citing) `eddy` can be found on [ADS](https://ui.adsabs.harvard.edu/abs/2019JOSS....4.1220T/citations).
