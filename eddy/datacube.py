@@ -295,7 +295,7 @@ class datacube(object):
                 raise ValueError(msg)
         elif coords.size != 2:
             raise ValueError(msg)
-        
+
         if frame == 'polar':
             x = coords[0] * np.cos(np.radians(coords[1]))
             y = coords[0] * np.sin(np.radians(coords[1]))
@@ -319,14 +319,14 @@ class datacube(object):
                                                z_func=z_func,
                                                shadowed=shadowed,
                                                flatten=True)
-        
+
         xvals, yvals, _ = self.disk_coords(x0=0.0,
                                            y0=0.0,
                                            inc=0.0,
                                            PA=0.0,
                                            outframe='cartesian',
                                            flatten=True)
-        
+
         # Interpolate the locations and return.
 
         r = datacube._griddata(points=(xvals, yvals),
@@ -345,11 +345,20 @@ class datacube(object):
         return r, t, z
 
     @staticmethod
-    def _rotate_coords(x, y, PA):
+    def _rotate_coords(x, y, PA, ox=0.0, oy=0.0):
         """Rotate (x, y) by PA [deg]."""
-        x_rot = y * np.cos(np.radians(PA)) + x * np.sin(np.radians(PA))
-        y_rot = x * np.cos(np.radians(PA)) - y * np.sin(np.radians(PA))
+        x_rot = (y - oy) * np.cos(np.radians(PA)) + (x - ox) * np.sin(np.radians(PA))
+        y_rot = (x - ox) * np.cos(np.radians(PA)) - (y - oy) * np.sin(np.radians(PA))
         return x_rot, y_rot
+
+    # def _rotate_coords(self, x, y, theta, ox, oy):
+    #     """Rotate arrays of coordinates x and y by theta radians about the
+    #     point (ox, oy).
+    #
+    #     """
+    #     s, c = np.sin(theta), np.cos(theta)
+    #     x, y = np.asarray(x) - ox, np.asarray(y) - oy
+    #     return x * c - y * s + ox, x * s + y * c + oy
 
     @staticmethod
     def _deproject_coords(x, y, inc):
@@ -457,7 +466,7 @@ class datacube(object):
         r_disk = np.hypot(x_disk, y_disk)
         t_disk = np.arctan2(y_disk, x_disk)
         return x_disk, y_disk, r_disk, t_disk
-    
+
     def cartesian_deprojection(self, data, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
                                z0=None, psi=None, r_taper=None, q_taper=1.0,
                                r_cavity=0.0, z_func=None, shadowed=False,
@@ -490,7 +499,7 @@ class datacube(object):
                 robust method for deprojecting pixel values.
             grid (Optional[array]): Grid to define the axis of the deprojection.
             griddata_kwargs (Optional[dict]): Kwargs to pass to
-                ``scipy.interpolate.griddata``. 
+                ``scipy.interpolate.griddata``.
 
         Returns:
             array, array: The grid onto which the data is interpolated, and the
@@ -532,7 +541,7 @@ class datacube(object):
                            r_cavity=0.0, z_func=None, shadowed=False,
                            rgrid=None, tgrid=None, griddata_kwargs=None):
         """
-        Deproject the data onto 
+        Deproject the data onto
 
         Args:
             data (array): Data to be deprojected. Must be the same shape as a
@@ -560,7 +569,7 @@ class datacube(object):
             rgrid (Optional[array]): Radial grid in [arcsec].
             tgrid (Optional[array]): Azimuthal grid in [degrees].
             griddata_kwargs (Optional[dict]): Kwargs to pass to
-                ``scipy.interpolate.griddata``. 
+                ``scipy.interpolate.griddata``.
 
         Returns:
             array, array, array: The radial and azimuthal grids onto which the
@@ -589,9 +598,9 @@ class datacube(object):
                                    shadowed=shadowed,
                                    outframe='cylindrical',
                                    flatten=True)
-        
+
         # Deproject onto a polar grid.
-        
+
         gridded = datacube._griddata(points=(np.degrees(t), r),
                                      values=data.flatten(),
                                      xi=(tgrid[:, None], rgrid[None, :]),
@@ -1095,7 +1104,7 @@ class datacube(object):
             dvals (array): Array of data values.
 
         Returns:
-            rvals, pvals, dvals (array, array, array): A subsample of the   
+            rvals, pvals, dvals (array, array, array): A subsample of the
                 provided arrays, ordered in increasing `pvals`.
         """
 
@@ -1129,7 +1138,7 @@ class datacube(object):
             print("Pixels appear to be close to spatially independent.")
 
         return rvals, pvals, dvals
-    
+
     def velocity_to_restframe_frequency(self, velax=None, vlsr=0.0):
         """Return restframe frequency [Hz] of the given velocity [m/s]."""
         velax = self.velax if velax is None else np.squeeze(velax)
@@ -1138,13 +1147,13 @@ class datacube(object):
     def restframe_frequency_to_velocity(self, nu, vlsr=0.0):
         """Return velocity [m/s] of the given restframe frequency [Hz]."""
         return 2.998e8 * (1. - nu / self.nu0) + vlsr
-    
+
     def spectral_resolution(self, dV=None):
         """Convert velocity resolution in [m/s] to [Hz]."""
         dV = dV if dV is not None else self.chan
         nu = self.velocity_to_restframe_frequency(velax=[-dV, 0.0, dV])
         return np.mean([abs(nu[1] - nu[0]), abs(nu[2] - nu[1])])
-    
+
     # -- PLOTTING FUNCTIONS -- #
 
     @staticmethod
