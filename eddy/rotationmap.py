@@ -843,7 +843,7 @@ class rotationmap(datacube):
         """
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots()
-    
+
         if vmin is None or vmax is None:
             vmin_tmp, vmax_tmp = np.nanpercentile(self.data, [2, 98])
             vmax_tmp = max(abs(vmin_tmp - self.vlsr), abs(vmax_tmp - self.vlsr))
@@ -1193,7 +1193,7 @@ class rotationmap(datacube):
 
         else:
             raise ValueError("'draws' must be a float or integer.")
-        
+
     def evaluate_models_vortex(self, samples=None, params=None, draws=50,
             collapse_func=np.median, frame=None):
         """
@@ -1230,11 +1230,11 @@ class rotationmap(datacube):
 
         if params is None:
             raise ValueError("Must provide model parameters dictionary.")
-        
+
         # NOTE: Calculate the coordinates needed for this. Note that this won't
         # be exactly the same draws (if draws > 1) but for a well sampled
         # posterior and a large enough draw value this should be OK...
-        
+
         rvals, tvals, _ = self.evaluate_models(samples=samples,
                                                params=params,
                                                draws=draws,
@@ -1244,11 +1244,11 @@ class rotationmap(datacube):
 
         if samples is None:
             verified_params = self.verify_params_dictionary(params.copy())
-            return self._make_model_vortex(rvals=rvals, 
+            return self._make_model_vortex(rvals=rvals,
                                            tvals=tvals,
                                            params=verified_params,
                                            frame=frame)
-        
+
         # Now do a random number of draws. Check to make sure the `params`
         # dictionary has the same number of free parameters as there are in
         # `samples`.
@@ -1267,18 +1267,18 @@ class rotationmap(datacube):
             models = []
             for idx in np.random.randint(0, samples.shape[0], draws):
                 tmp = self._populate_dictionary(samples[idx], verified_params)
-                models += [self._make_model_vortex(rvals=rvals, 
+                models += [self._make_model_vortex(rvals=rvals,
                                                    tvals=tvals,
                                                    params=tmp,
                                                    frame=frame)]
             return collapse_func(models, axis=0)
-        
+
         # Take a percentile of the samples.
 
         elif isinstance(draws, float):
             tmp = np.percentile(samples, draws, axis=0)
             tmp = self._populate_dictionary(tmp, verified_params)
-            self._make_model(rvals=rvals, 
+            self._make_model(rvals=rvals,
                              tvals=tvals,
                              params=tmp,
                              frame=frame)
@@ -1287,7 +1287,7 @@ class rotationmap(datacube):
 
         else:
             raise ValueError("'draws' must be a float or integer.")
-        
+
     def save_model(self, samples=None, params=None, model=None, filename=None,
                    overwrite=True):
         """
@@ -1441,7 +1441,7 @@ class rotationmap(datacube):
             taper = np.exp(-np.power(taper, 2.0))
             vpow *= np.where(rvals <= r_p, 1.0, taper)
         return vpow
-    
+
     def _make_model_vortex(self, rvals, tvals, params, frame=None):
         """
         Vortex velocity profile projected onto the requested frame. Can return
@@ -1477,7 +1477,7 @@ class rotationmap(datacube):
             # Shift in the polar angle.
 
             dtheta = i * 2.0 * np.pi
-            tvals_tmp = tvals + dtheta 
+            tvals_tmp = tvals + dtheta
 
             # (x_tmp, y_tmp) describe the vortex cartesian frame.
 
@@ -1558,7 +1558,7 @@ class rotationmap(datacube):
 
         vphi = params['vfunc'](rvals, tvals, zvals, params)
         vphi_proj = self._proj_vphi(vphi, tvals, params)
-        if params['vortex']:        
+        if params['vortex']:
             vvor_proj = self._make_model_vortex(rvals, tvals, params)
         else:
             vvor_proj = 0.0
@@ -2702,7 +2702,6 @@ class rotationmap(datacube):
             plt.scatter(s_mx[0], s_my[0], color='r')
             plt.scatter(s_px[0], s_py[0], color='orange')
             plt.title('Before path cuts')
-            plt.show()
 
         # Cut out velocity values that change significantly
         new_pos_points = []
@@ -2860,7 +2859,6 @@ class rotationmap(datacube):
             plt.figure()
             plt.plot(self.v_ratio_s_si, self.v_ratio_s_array)
             plt.title('V ratio (s)')
-            plt.show()
 
         if any(self.v_ratio_s_si < -0.5*r_cavity):
             print("Warning: Some values of the path s in v_ratio_s are very negative.")
