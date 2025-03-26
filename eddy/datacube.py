@@ -53,6 +53,10 @@ class datacube(object):
         if velocity_range is not None:
             self._clip_cube_velocity(*velocity_range)
 
+    @property
+    def rms(self):
+        return self.estimate_cube_RMS()
+
     # -- PIXEL DEPROJECTION -- #
 
     def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=None, psi=None,
@@ -541,7 +545,7 @@ class datacube(object):
                            r_cavity=0.0, z_func=None, shadowed=False,
                            rgrid=None, tgrid=None, griddata_kwargs=None):
         """
-        Deproject the data onto
+        Deproject the provided data onto a polar grid.
 
         Args:
             data (array): Data to be deprojected. Must be the same shape as a
@@ -579,9 +583,9 @@ class datacube(object):
         # Set the default grids.
 
         if rgrid is None:
-            rgrid = np.linspace(0, self.xaxis.max(), 100)
+            rgrid = np.arange(0, self.xaxis.max(), self.dpix)
         if tgrid is None:
-            tgrid = np.linspace(-180.0, 180.0, 180)
+            tgrid = np.linspace(-np.pi, np.pi, self.xaxis.size)
 
         # Get the pixel coordinates.
 
@@ -596,14 +600,13 @@ class datacube(object):
                                    r_cavity=r_cavity,
                                    z_func=z_func,
                                    shadowed=shadowed,
-                                   outframe='cylindrical',
-                                   flatten=True)
+                                   outframe='cylindrical')
 
         # Deproject onto a polar grid.
 
-        gridded = datacube._griddata(points=(np.degrees(t), r),
+        gridded = datacube._griddata(points=(r.flatten(), t.flatten()),
                                      values=data.flatten(),
-                                     xi=(tgrid[:, None], rgrid[None, :]),
+                                     xi=(rgrid[None, :], tgrid[:, None]),
                                      griddata_kwargs=griddata_kwargs)
 
         return rgrid, tgrid, gridded
@@ -1092,16 +1095,21 @@ class datacube(object):
         uncertainty = np.sqrt(nbeams) * self.estimate_cube_RMS()
         return spectrum, uncertainty
 
-    def _independent_samples(self, beam_spacing, rvals, pvals, dvals):
+    def _independent_samples(self, beam_spacing, rvals, pvals, dvals, xsky,
+            ysky, jidx, iidx):
         """
         Returns spatially independent samples.
 
         Args:
             beam_spacing (int): Sample pixels separated by roughly
             `beam_spacing * bmaj` in azimuthal distance.
-            rvals (array): Array of radial values in [arcsec].
-            pvals (array): Array of polar angles in [radians].
-            dvals (array): Array of data values.
+            rvals (ndarray): Array of radial values in [arcsec].
+            pvals (ndarray): Array of polar angles in [radians].
+            dvals (ndarray): Array of data values.
+            xsky (ndarray): On-sky x-offset in [arcsec] of each pixel.
+            ysky (ndarray): On-sky y-offset in [arcsec] of each pixel.
+            jidx (ndarray): j-index of the original data array (y-axis).
+            iidx (ndarray): i-index of the original data array (x-axis).
 
         Returns:
             rvals, pvals, dvals (array, array, array): A subsample of the
@@ -1109,12 +1117,18 @@ class datacube(object):
         """
 
         if not beam_spacing:
-            return rvals, pvals, dvals
+            return rvals, pvals, dvals, xsky, ysky, jidx, iidx
 
-        # Order pixels in increasing phi.
+        # Order pixels and arrays in increasing phi.
 
         idxs = np.argsort(pvals)
-        dvals, pvals = dvals[idxs], pvals[idxs]
+        dvals = dvals[idxs]
+        pvals = pvals[idxs]
+        rvals = rvals[idxs]
+        xsky = xsky[idxs]
+        ysky = ysky[idxs]
+        jidx = jidx[idxs]
+        iidx = iidx[idxs]
 
         # Calculate the sampling rate.
 
@@ -1128,16 +1142,24 @@ class datacube(object):
 
         if sampling > 1:
             start = np.random.randint(0, pvals.size)
-            rvals = np.concatenate([rvals[start:], rvals[:start]])
-            pvals = np.concatenate([pvals[start:], pvals[:start]])
             dvals = np.vstack([dvals[start:], dvals[:start]])
-            rvals = rvals[::sampling]
-            pvals = pvals[::sampling]
+            pvals = np.concatenate([pvals[start:], pvals[:start]])
+            rvals = np.concatenate([rvals[start:], rvals[:start]])
+            xsky = np.concatenate([xsky[start:], xsky[:start]])
+            ysky = np.concatenate([ysky[start:], ysky[:start]])
+            jidx = np.concatenate([jidx[start:], jidx[:start]])
+            iidx = np.concatenate([iidx[start:], iidx[:start]])
             dvals = dvals[::sampling]
+            pvals = pvals[::sampling]
+            rvals = rvals[::sampling]
+            xsky = xsky[::sampling]
+            ysky = ysky[::sampling]
+            jidx = jidx[::sampling]
+            iidx = iidx[::sampling]
         else:
             print("Pixels appear to be close to spatially independent.")
 
-        return rvals, pvals, dvals
+        return rvals, pvals, dvals, xsky, ysky, jidx, iidx
 
     def velocity_to_restframe_frequency(self, velax=None, vlsr=0.0):
         """Return restframe frequency [Hz] of the given velocity [m/s]."""
@@ -1153,6 +1175,273 @@ class datacube(object):
         dV = dV if dV is not None else self.chan
         nu = self.velocity_to_restframe_frequency(velax=[-dV, 0.0, dV])
         return np.mean([abs(nu[1] - nu[0]), abs(nu[2] - nu[1])])
+
+    # -- GENERAL ANALYSIS FUNCTIONS -- #
+
+    def _beam_mask(self, x, y, threshold=0.5, stretch=1.0, response=False):
+        """
+        Returns a 2D Gaussian mask based on the attached beam centered at
+        (x, y) on the sky.
+
+        Args:
+            x (flaot): RA offset of the center of the beam.
+            y (float): Dec offset of the center of the beam.
+            threshold (Optional[float]): Threshold beam power to consider a
+                pixel within the beam. Default is 0.5.
+            stretch (Optional[float]): Stretch the beam by this factor. A
+                `stretch=2` will result in a beam mask that is twice as large
+                as the attached beam.
+            response (Optional[bool]): If ``True``, return the beam response
+                function rather than a boolean mask.
+
+        Returns:
+            beammask (arr): 2D boolean array of pixels covered by the beam if
+            ``response=False``, the default, otherwise a 2D array of the beam
+            response function centered at that location.
+        """
+        xx, yy = np.meshgrid(self.xaxis - x, self.yaxis - y)
+        theta = -np.radians(self.bpa)
+        std_x = 0.5 * stretch * self.bmin / np.sqrt(np.log(2.0))
+        std_y = 0.5 * stretch * self.bmaj / np.sqrt(np.log(2.0))
+        a = np.cos(theta)**2 / std_x**2 + np.sin(theta)**2 / std_y**2
+        b = np.sin(2*theta) / std_x**2 - np.sin(2*theta) / std_y**2
+        c = np.sin(theta)**2 / std_x**2 + np.cos(theta)**2 / std_y**2
+        f = np.exp(-(a*xx**2 + b*xx*yy + c*yy**2))
+        return f if response else f >= threshold
+
+    def radial_sampling(self, rbins=None, rvals=None, dr=None):
+        """
+        Return bins and bin center values. If the desired bin edges are known,
+        will return the bin edges and vice versa. If neither are known will
+        return default binning with the desired spacing.
+
+        Args:
+            rbins (Optional[list]): List of bin edges.
+            rvals (Optional[list]): List of bin centers.
+            dr (Optional[float]): Spacing of bin centers in [arcsec]. Defaults
+                to a quarter of the beam major axis.
+
+        Returns:
+            rbins (list): List of bin edges.
+            rpnts (list): List of bin centres.
+        """
+        if rbins is not None and rvals is not None:
+            raise ValueError("Specify only 'rbins' or 'rvals', not both.")
+        if rvals is not None:
+            try:
+                dr = np.diff(rvals)[0] * 0.5
+            except IndexError:
+                if self.dpix == self.bmaj:
+                    dr = 2.0 * self.dpix
+                else:
+                    dr = self.bmaj / 4.0
+            rbins = np.linspace(rvals[0] - dr, rvals[-1] + dr, len(rvals) + 1)
+        if rbins is not None:
+            rvals = np.average([rbins[1:], rbins[:-1]], axis=0)
+        else:
+            if dr is None:
+                if self.dpix == self.bmaj:
+                    dr = 2.0 * self.dpix
+                else:
+                    dr = self.bmaj / 4.0
+            rbins = np.arange(0, self.xaxis.max(), dr)
+            rvals = np.average([rbins[1:], rbins[:-1]], axis=0)
+        return rbins, rvals
+
+    def radial_profile(self, rbins=None, rvals=None, dr=None, x0=0.0, y0=0.0,
+            inc=0.0, PA=0.0, z0=None, psi=None, r_cavity=0.0, r_taper=None,
+            q_taper=1.0, z_func=None, shadowed=False, data=None,
+            assume_correlated=True, percentiles=False):
+        """
+        Make an azimuthally averaged radial profile from the data.
+
+        Args:
+            rbins (Optional[list]): List of bin edges.
+            rvals (Optional[list]): List of bin centers.
+            dr (Optional[float]): Spacing of bin centers in [arcsec]. Defaults
+                to a quarter of the beam major axis.
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [degrees]. A positive
+                inclination denotes a disk rotating clockwise on the sky, while
+                a negative inclination represents a counter-clockwise rotation.
+            PA (Optional[float]): Source position angle [degrees]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            r_taper (Optional[float]): Radius for tapered emission surface.
+            q_taper (Optional[float]): Exponent for tapered emission surface.
+            r_cavity (Optional[float]): Outer radius of a cavity. Within this
+                region the emission surface is taken to be zero.
+            z_func (Optional[callable]): A user-defined emission surface
+                function that will return ``z`` in [arcsec] for a given ``r``
+                in [arcsec]. This will override the analytical form.
+            shadowed (Optional[bool]): Whether to use the slower, but more
+                robust method for deprojecting pixel values.
+            data (Optional[array]): Data to calculate a radial profile of. If
+                not provided, will use the attached dataset.
+            assumed_correlated (Optional[bool]): If ``True``, take into account
+                the beam size in calculating the uncertainty on the radial
+                profile.
+            percentiles (Optional[bool]): If ``True``, use the 16th, 50th and
+                84th percentiles to define the profile and uncertainties.
+                Otherwise use the mean and standard deviation.
+
+        Returns:
+            Three 1D arrays with ``x``, ``y`` and ``dy`` for plotting.
+        """
+
+        # Select the data to use. Defaults to attached data if not provided.
+
+        data = self.data if data is None else data
+        assert data.ndim == 2, "Can only provide radial profiles for 2D data."
+
+        # Get the radial sampling.
+
+        rbins, rvals = self.radial_sampling(rbins=rbins,
+                                            rvals=rvals,
+                                            dr=dr)
+
+        # Calculate the deprojected pixel values.
+
+        rpnts, _, _ = self.disk_coords(x0=x0,
+                                       y0=y0,
+                                       inc=inc,
+                                       PA=PA,
+                                       z0=z0,
+                                       psi=psi,
+                                       r_cavity=r_cavity,
+                                       r_taper=r_taper,
+                                       q_taper=q_taper,
+                                       z_func=z_func,
+                                       shadowed=shadowed,
+                                       flatten=True)
+
+        # Calculate the radial profile.
+
+        if assume_correlated:
+            nbeams = 2.0 * np.pi * rvals / self.bmaj
+        else:
+            nbeams = 1.0
+
+        # Radial binning.
+
+        toavg = data.flatten()
+        assert toavg.size == rpnts.size
+        ridxs = np.digitize(rpnts, rbins)
+
+        # Averaging.
+
+        if percentiles:
+            rstat = np.array([np.nabpercentile(toavg[ridxs == r], [16, 50, 84])
+                              for r in range(1, rbins.size)]).T
+            ravgs = rstat[1]
+            rstds = np.array([rstat[1] - rstat[0], rstat[2] - rstat[1]])
+            rstds /= np.sqrt(nbeams)[None, :]
+        else:
+            ravgs = np.array([np.nanmean(toavg[ridxs == r])
+                              for r in range(1, rbins.size)])
+            rstds = np.array([np.nanstd(toavg[ridxs == r])
+                              for r in range(1, rbins.size)])
+            rstds /= np.sqrt(nbeams)
+
+        # Return.
+
+        return rvals, ravgs, rstds
+
+    def background_residual(self, rbins=None, rvals=None, dr=None, x0=0.0,
+            y0=0.0, inc=0.0, PA=0.0, z0=None, psi=None, r_cavity=0.0,
+            r_taper=None, q_taper=1.0, z_func=None, shadowed=False, data=None,
+            return_background=False):
+        """
+        Subtract an azimuthally averaged residual from the data to highlight
+        residuals.
+
+        Args:
+            rbins (Optional[list]): List of bin edges.
+            rvals (Optional[list]): List of bin centers.
+            dr (Optional[float]): Spacing of bin centers in [arcsec]. Defaults
+                to a quarter of the beam major axis.
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [degrees]. A positive
+                inclination denotes a disk rotating clockwise on the sky, while
+                a negative inclination represents a counter-clockwise rotation.
+            PA (Optional[float]): Source position angle [degrees]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            r_taper (Optional[float]): Radius for tapered emission surface.
+            q_taper (Optional[float]): Exponent for tapered emission surface.
+            r_cavity (Optional[float]): Outer radius of a cavity. Within this
+                region the emission surface is taken to be zero.
+            z_func (Optional[callable]): A user-defined emission surface
+                function that will return ``z`` in [arcsec] for a given ``r``
+                in [arcsec]. This will override the analytical form.
+            shadowed (Optional[bool]): Whether to use the slower, but more
+                robust method for deprojecting pixel values.
+            data (Optional[array]): Data to calculate a radial profile of. If
+                not provided, will use the attached dataset.
+            return_background (Optional[bool]): If ``True``, return the modeled
+                background rather than the residual.
+
+        Returns:
+            background (array): The residuals after subtracted an azimuthally
+                symmetric background, or the modeled background if
+                ``return_background=True``.
+
+        """
+        from scipy.interpolate import interp1d
+
+        # Calculate the deprojected pixel values.
+
+        rpnts, _, _ = self.disk_coords(x0=x0,
+                                       y0=y0,
+                                       inc=inc,
+                                       PA=PA,
+                                       z0=z0,
+                                       psi=psi,
+                                       r_cavity=r_cavity,
+                                       r_taper=r_taper,
+                                       q_taper=q_taper,
+                                       z_func=z_func,
+                                       shadowed=shadowed,
+                                       flatten=False)
+
+        # Calculate the radial profile. Note here we already define what the
+        # data array is such that we can subtract the model from it later.
+
+        data = self.data if data is None else data
+        x, y, _ = self.radial_profile(rbins=rbins,
+                                      rvals=rvals,
+                                      dr=dr,
+                                      x0=x0,
+                                      y0=y0,
+                                      inc=inc,
+                                      PA=PA,
+                                      z0=z0,
+                                      psi=psi,
+                                      r_cavity=r_cavity,
+                                      r_taper=r_taper,
+                                      q_taper=q_taper,
+                                      z_func=z_func,
+                                      shadowed=shadowed,
+                                      data=data)
+
+        # Calculate the background model and return if necessary.
+
+        background = interp1d(x, y, bounds_error=False)(rpnts)
+        if return_background:
+            return background
+
+        # Calculate the residual and return.
+
+        residual = data - background
+        return residual
 
     # -- PLOTTING FUNCTIONS -- #
 
