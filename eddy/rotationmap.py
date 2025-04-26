@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 
+import os
 import time
 import yaml
 import zeus
 import emcee
 import numpy as np
 import scipy.constants as sc
+from scipy.ndimage import measurements
 from .datacube import datacube
 from .helper_functions import plot_walkers, plot_corner, random_p0
 import matplotlib.pyplot as plt
@@ -40,6 +42,9 @@ class rotationmap(datacube):
             If you use ``downsample='beam'`` it will sample roughly
             spatially independent pixels using the beam major axis as the
             spacing.
+        remove_clusters (Optional[float]): Remove any clusters of points in the
+            velocity map that are smaller than this factor multiplied by the
+            beam area.
         fill (Optional[float]): Replace all ``NaN`` values with this value.
         force_center (Optional[bool]): If ``True`` define the spatial axes such
             that they describe offset from the array center in [arcsec]. This
@@ -47,15 +52,15 @@ class rotationmap(datacube):
     """
 
     priors = {}
+    SHO_priors = {}
+    _vortex_layers = 2
 
     def __init__(self, path, FOV=None, uncertainty=None, downsample=None,
-                 fill=None, force_center=False):
+                 remove_clusters=None, fill=None, force_center=False):
         datacube.__init__(self, path=path, FOV=FOV, fill=fill,
                           force_center=force_center)
 
         # Check to see what unit the velocities are in.
-        # TODO: Sometimes the bunit is not m/s or km/s so we might want to
-        # include a check.
 
         if self.header['bunit'].lower() not in ['m/s', 'km/s']:
             msg = "What is the velocity unit? Either `m/s` or `km/s`."
@@ -77,7 +82,11 @@ class rotationmap(datacube):
             self.original_yaxis = deepcopy(self.yaxis)
             self.original_data = deepcopy(self.data)
 
-            # Now downsample the cube
+        if remove_clusters is not None:
+            self.remove_clusters(remove_clusters, fill=fill)
+
+        # Now downsample the cube
+        if downsample is not None:
             self.downsample_cube(downsample)
 
         self.default_parameters = self._load_default_parameters()
@@ -113,10 +122,8 @@ class rotationmap(datacube):
 
     def fit_map(self, p0, params, r_min=None, r_max=None, optimize=True,
                 nwalkers=None, nburnin=300, nsteps=100, scatter=1e-3,
-                plots=None, savefigs=False, savemodels=False,
-                returns=None, pool=None, mcmc='emcee',
-                mcmc_kwargs=None, imshow_kwargs=None,
-                downsample_plots=True, niter=1):
+                plots=None, returns=None, save_figures=False, pool=None, mcmc='emcee',
+                mcmc_kwargs=None, niter=1):
         """
         Fit a rotation profile to the data. Note that for a disk with
         a non-zero height, the sign of the inclination dictates the direction
@@ -174,6 +181,7 @@ class rotationmap(datacube):
                 ``'samples'``, ``'sampler'``, ``'percentiles'``, ``'dict'``,
                 ``'model'``, ``'residuals'`` or ``'none'``. By default only
                 ``'percentiles'`` are returned.
+            save_figures (optional[bool]): Save the diagnostic plots.
             pool (optional): An object with a `map` method.
             mcmc_kwargs (Optional[dict]): Dictionary to pass to the MCMC
                 ``EnsembleSampler``.
@@ -279,6 +287,8 @@ class rotationmap(datacube):
             self.max_likelihood_params = max_likelihood
 
         # Diagnostic plots.
+        if save_figures:
+            save_figures = self.name
 
         if plots is None:
             plots = ['walkers', 'corner', 'bestfit', 'residual']
@@ -293,25 +303,21 @@ class rotationmap(datacube):
                 walkers = sampler.chain.T
             else:
                 walkers = np.rollaxis(sampler.chain.copy(), 2)
-            plot_walkers(walkers, nburnin[-1], labels, savename=savename)
+            plot_walkers(walkers, nburnin[-1], labels, save_name=save_figures)
         if 'corner' in plots:
-            plot_corner(samples, labels, savename=savename)
+            plot_corner(samples, labels, save_name=save_figures)
         if 'bestfit' in plots:
             self.plot_model(samples=samples,
                             params=params,
                             mask=self.ivar,
                             draws=10,
-                            imshow_kwargs=imshow_kwargs,
-                            savename=savename,
-                            downsample=downsample_plots)
+                            save_name=save_figures)
         if 'residual' in plots:
             self.plot_model_residual(samples=samples,
                                      params=params,
                                      mask=self.ivar,
                                      draws=10,
-                                     imshow_kwargs=imshow_kwargs,
-                                     savename=savename,
-                                     downsample=downsample_plots)
+                                     save_name=save_figures)
 
         # Generate the output.
 
@@ -347,22 +353,12 @@ class rotationmap(datacube):
         return to_return if len(to_return) > 1 else to_return[0]
 
     def fit_annuli(self, rpnts=None, rbins=None, x0=0.0, y0=0.0, inc=0.0,
-<<<<<<< HEAD
-                   PA=0.0, z0=0.0, psi=None, r_cavity=None, r_taper=None,
-                   q_taper=None, w_i=None, w_r=None, w_t=None, z_func=None,
-                   shadowed=False, phi_min=None, phi_max=None,
-                   exclude_phi=False, abs_phi=False, mask_frame='disk',
-                   user_mask=None, fit_vrot=True, fit_vrad=True,
-                   fix_vlsr=False, plots=None, returns=None,
-                   optimize_kwargs=None):
-=======
                    PA=0.0, z0=0.0, psi=1.0, r_cavity=0.0, r_taper=np.inf,
                    q_taper=1.0, z_func=None, shadowed=False, phi_min=None,
                    phi_max=None, exclude_phi=False, abs_phi=False,
                    mask_frame='disk', user_mask=None, fit_vrad=True,
                    fix_vlsr=None, beam_spacing=0, niter=1, plots=None,
                    returns=None, optimize_kwargs=None, MCMC=False):
->>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
         r"""
         Splits the map into concentric annuli based on the geometrical
         parameters, then fits each annnulus with a simple harmonic oscillator
@@ -504,21 +500,10 @@ class rotationmap(datacube):
             sorted = np.argsort(x)
             x, y, dy = x[sorted], y[sorted], dy[sorted]
 
-<<<<<<< HEAD
-            # Fit the pixels, and correct the radial velocity to have positive
-            # velocities describining motions away from the star.
-
-            popt, cvar = self._fit_SHO(x=x, y=y, dy=dy,
-                                       fit_vrot=fit_vrot,
-                                       fit_vrad=fit_vrad,
-                                       fix_vlsr=fix_vlsr,
-                                       optimize_kwargs=optimize_kwargs)
-=======
             if len(x) < 2:
                 velo += [empty]
                 dvelo += [empty]
                 continue
->>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
 
             # Here we can include some sampling to mimic the `niter` command
             # when using a full cube. If using `niter > 1` then the value and
@@ -648,11 +633,6 @@ class rotationmap(datacube):
             to_return += [self.data - model]
         return to_return
 
-<<<<<<< HEAD
-    def _evaluate_annuli_model(self, rpnts, fits, rvals, pvals, fit_vrot=True,
-                               fit_vrad=True, fix_vlsr=False):
-        """Evaluate the annuli models. Fits must not be deprojected."""
-=======
     def _evaluate_annuli_model(self, rpnts, velo_proj, rvals, pvals):
         """
         Evaluate the annuli models onto a 2D map. The velocity profiles must be
@@ -668,7 +648,6 @@ class rotationmap(datacube):
         Returns:
             v0 (array): Model of the projected velocity in [m/s].
         """
->>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
         from scipy.interpolate import interp1d
         from .helper_functions import SHO_double
         A = interp1d(rpnts, velo_proj[0], bounds_error=False)(rvals)
@@ -683,62 +662,6 @@ class rotationmap(datacube):
         duplication of `annulus.get_vlos_SHO`.
         """
 
-<<<<<<< HEAD
-    def _fit_SHO(self, x, y, dy, fit_vrot=True, fit_vrad=True, fix_vlsr=False,
-                 optimize_kwargs=None):
-        """Fit the points with a simple harmonic oscillator."""
-
-        from .helper_functions import SHO_double
-        from scipy.optimize import curve_fit
-
-        # Guess the starting parameters.
-
-        vrot = 0.5 * (y.max() - y.min())
-        vrad = 0.0
-        vlsr = fix_vlsr if fix_vlsr else y.mean()
-
-        # Define the function to fit the data.
-
-        if not fix_vlsr:
-            if fit_vrot and fit_vrad:
-                def func(x, *params):
-                    return SHO_double(x, *params)
-                p0 = [vrot, vrad, vlsr]
-                nparam = 3
-            elif fit_vrot and (not fit_vrad):
-                def func(x, *params):
-                    return SHO_double(x, params[0], 0.0, params[-1])
-                p0 = [vrot, vlsr]
-                nparam = 2
-            elif (not fit_vrot) and fit_vrad:
-                def func(x, *params):
-                    return SHO_double(x, params[0], 0.0, params[-1])
-                p0 = [vrot, vlsr]
-                nparam = 2
-            else:
-                def func(x, *params):
-                    return SHO_double(x, 0.0, 0.0, *params)
-                p0 = [vlsr]
-                nparam = 1
-        else:
-            if fit_vrot and fit_vrad:
-                def func(x, *params):
-                    return SHO_double(x, *params, fix_vlsr)
-                p0 = [vrot, vrad]
-                nparam = 2
-            elif fit_vrot and (not fit_vrad):
-                def func(x, *params):
-                    return SHO_double(x, *params, 0.0, fix_vlsr)
-                p0 = [vrot]
-                nparam = 1
-            elif (not fit_vrot) and fit_vrad:
-                def func(x, *params):
-                    return SHO_double(x, 0.0, *params, fix_vlsr)
-                p0 = [vrad]
-                nparam = 1
-            else:
-                raise ValueError("You must fit one parameter!")
-=======
         if MCMC: # IGNORE MCMC FOR NOW.
             raise NotImplementedError()
 
@@ -747,18 +670,10 @@ class rotationmap(datacube):
 
         # Starting positions. Here we're using projected velocities such that
         # A = vrot * sin(|i|), B = -vrad * sin(i) and C = vlsr - vz * cos(i).
->>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
 
         A, B, C = 0.5 * (y.max() - y.min()), 0.0, y.mean()
         p0 = [A, C] if not fit_vrad else [A, B, C]
 
-<<<<<<< HEAD
-        if len(y) == 0:
-            popt = np.empty(nparam)
-            cvar = popt.copy()
-            return popt, cvar
-
-=======
         # Set up curve_fit. TODO: Is there a better fitting routine than this?
 
         optimize_kwargs = {} if optimize_kwargs is None else optimize_kwargs
@@ -798,7 +713,6 @@ class rotationmap(datacube):
         """Use scipy.optimize.curve_fit for the fitting."""
         from scipy.optimize import curve_fit
 
->>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
         # Set up the optimization.
 
         kw = {} if optimize_kwargs is None else optimize_kwargs
@@ -876,11 +790,18 @@ class rotationmap(datacube):
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots()
 
-        vmin = np.nanpercentile(self.data, [2]) if vmin is None else vmin
-        vmax = np.nanpercentile(self.data, [98]) if vmax is None else vmax
-        vmax = max(abs(vmin - self.vlsr), abs(vmax - self.vlsr))
+        if vmin is None or vmax is None:
+            vmin_tmp, vmax_tmp = np.nanpercentile(self.data, [2, 98])
+            vmax_tmp = max(abs(vmin_tmp - self.vlsr), abs(vmax_tmp - self.vlsr))
+            vmin_tmp = (self.vlsr - vmax_tmp) / 1e3
+            vmax_tmp = (self.vlsr + vmax_tmp) / 1e3
+            if vmin is None:
+                vmin = vmin_tmp
+            if vmax is None:
+                vmax = vmax_tmp
+
         im = ax.imshow(self.data / 1e3, origin='lower', extent=self.extent,
-                       vmin=(self.vlsr-vmax)/1e3, vmax=(self.vlsr+vmax)/1e3,
+                       vmin=vmin, vmax=vmax,
                        cmap=rotationmap.cmap(), zorder=-9)
         cb = plt.colorbar(im, pad=0.03, extend='both', format='%.2f')
         cb.minorticks_on()
@@ -997,28 +918,6 @@ class rotationmap(datacube):
 
         # fit_map functions
 
-<<<<<<< HEAD
-        self.set_prior('z0', [0.0, 5.0], 'flat')
-        self.set_prior('psi', [0.0, 5.0], 'flat')
-        self.set_prior('r_cavity', [0.0, 1e30], 'flat')
-        self.set_prior('r_taper', [0.0, 1e30], 'flat')
-        self.set_prior('q_taper', [0.0, 5.0], 'flat')
-
-        # Warp
-
-        self.set_prior('w_i', [-90.0, 90.0], 'flat')
-        self.set_prior('w_r', [0.0, self.xaxis.max()], 'flat')
-        self.set_prior('w_t', [-180.0, 180.0], 'flat')
-
-        # Velocity Profile
-
-        self.set_prior('vp_100', [0.0, 1e4], 'flat')
-        self.set_prior('vp_q', [-2.0, 0.0], 'flat')
-        self.set_prior('vp_rtaper', [0.0, 1e30], 'flat')
-        self.set_prior('vp_qtaper', [0.0, 5.0], 'flat')
-        self.set_prior('vr_100', [-1e3, 1e3], 'flat')
-        self.set_prior('vr_q', [-2.0, 2.0], 'flat')
-=======
         for k in self.default_parameters.keys():
             p = self.default_parameters[k]
             if p['prior_type'] is not None:
@@ -1029,7 +928,6 @@ class rotationmap(datacube):
         self.set_SHO_prior('vrot', [-3e3, 3e3], 'flat')
         self.set_SHO_prior('vrad', [-1e2, 1e2], 'flat')
         self.set_SHO_prior('vlsr', [-1e4, 1e4], 'flat')
->>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
 
     def _ln_prior(self, params):
         """Log-priors."""
@@ -1126,38 +1024,6 @@ class rotationmap(datacube):
 
         # Rotation profile.
 
-<<<<<<< HEAD
-        has_vp_100 = False if params.get('vp_100') is None else True
-        has_mstar = False if params.get('mstar') is None else True
-        if has_mstar and has_vp_100:
-            raise KeyError("Only provide either `'mstar'` or `'vp_100'`.")
-        if not has_mstar and not has_vp_100:
-            raise KeyError("Must provide either `'mstar'` or `'vp_100'`.")
-        if has_mstar:
-            params['vfunc'] = self._proj_vkep
-        else:
-            params['vfunc'] = self._proj_vpow
-        params['vp_q'] = params.pop('vp_q', -0.5)
-        params['vp_rtaper'] = params.pop('vp_rtaper', 1e10)
-        params['vp_qtaper'] = params.pop('vp_qtaper', 1.0)
-        params['vr_100'] = params.pop('vr_100', 0.0)
-        params['vr_q'] = params.pop('vr_q', 0.0)
-
-        # Flared emission surface.
-
-        params['z0'] = params.pop('z0', 0.0)
-        params['psi'] = params.pop('psi', None)
-        params['r_taper'] = params.pop('r_taper', None)
-        params['q_taper'] = params.pop('q_taper', None)
-        params['r_cavity'] = params.pop('r_cavity', None)
-        params['z_func'] = params.pop('z_func', None)
-
-        # Warp parameters.
-
-        params['w_i'] = params.pop('w_i', 0.0)
-        params['w_r'] = params.pop('w_r', 0.5 * max(self.xaxis))
-        params['w_t'] = params.pop('w_t', 0.0)
-=======
         if params['vp_100'] is not None:
             if params['mstar'] is not None:
                 params['vfunc'] = self._vpow
@@ -1166,48 +1032,27 @@ class rotationmap(datacube):
         else:
             params['vfunc'] = self._vkep
 
+        # Vortex model.
+
+        if params['r0_vortex'] is not None:
+            if params['p0_vortex'] is not None:
+                params['vortex'] = True
+            else:
+                raise ValueError("Must specify by `r0_vortex` and `p0_vortex'.")
+        else:
+            params['vortex'] = False
+
         # Deprojection properties.
 
         params['z_func'] = params.pop('z_func', None)
->>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
         params['shadowed'] = params.pop('shadowed', False)
-
-        # Masking parameters.
-
-        # params['r_min'] = params.pop('r_min', 0.0)
-        # params['r_max'] = params.pop('r_max', 1e10)
-        # params['exclude_r'] = params.pop('exclude_r', False)
-        # params['phi_min'] = params.pop('phi_min', -180.0)
-        # params['phi_max'] = params.pop('phi_max', 180.0)
-        # params['exclude_phi'] = params.pop('exclude_phi', False)
-        # params['abs_phi'] = params.pop('abs_phi', False)
-        # params['v_min'] = params.pop('v_min', np.nanmin(self.data))
-        # params['v_max'] = params.pop('v_max', np.nanmax(self.data))
-        # params['exclude_v'] = params.pop('exclude_v', False)
         params['user_mask'] = params.pop('user_mask', np.ones(self.data.shape))
-
-        # if params['r_min'] >= params['r_max']:
-        #     raise ValueError("`r_max` must be greater than `r_min`.")
-        # if params['phi_min'] >= params['phi_max']:
-        #     raise ValueError("`phi_max` must be great than `phi_min`.")
-        # if params['v_min'] >= params['v_max']:
-        #     raise ValueError("`v_max` must be greater than `v_min`.")
-
-        # Beam convolution.
-
-        # params['beam'] = bool(params.pop('beam', False))
 
         return params
 
-<<<<<<< HEAD
-
-    def evaluate_models(self, samples=None, params=None, draws=0.5,
-                        collapse_func=np.mean, coords_only=False):
-=======
     def evaluate_models(self, samples=None, params=None, draws=50,
-                        collapse_func=np.mean, coords_only=False,
+                        collapse_func=np.median, coords_only=False,
                         profile_only=False):
->>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
         """
         Evaluate models based on the samples provided and the parameter
         dictionary. If ``draws`` is an integer, it represents the number of
@@ -1278,6 +1123,100 @@ class rotationmap(datacube):
                 return self.disk_coords(**tmp)
             else:
                 return self._make_model(tmp)
+
+        else:
+            raise ValueError("'draws' must be a float or integer.")
+
+    def evaluate_models_vortex(self, samples=None, params=None, draws=50,
+            collapse_func=np.median, frame=None):
+        """
+        Evaluate the vortex model. Same functionality as ``evaluate_models`` but
+        only for evaluating the vortex model. The frame of reference can be
+        chosen with the options being ``None``, the default which returns just
+        the on-sky projection, ``'sky'``, ``'face-on'``, ``'polar'`` and
+        ``'vortex'``. The ``'sky'`` frame includes the projection of the
+        velocity along the line of sight, while the ``'face-on'``, ``'polar'``
+        and ``'vortex'`` frames are the intrinsic velocities. Note that for all
+        frames other than ``'sky'`` the model is on an unstructured grid so will
+        require gridding if used for a figure.
+
+        Args:
+            samples (ndarray): An array of samples returned from ``fit_map``.
+            params (dict): The parameter dictionary passed to ``fit_map``.
+            draws (Optional[int/float]): If an integer, describes the number of
+                random draws averaged to form the returned model. If a float,
+                represents the percentile used from the samples. Must be
+                between 0 and 1 if a float.
+            collapse_func (Optional[callable]): How to collapse the random
+                number of samples. Must be a function which allows an ``axis``
+                argument (as with most Numpy functions).
+            frame (Optional[None/str]): The frame for the projection of the
+                velocity components. If ``frame=None`` then the on-sky
+                projection is used and no associated coordinates are returned.
+
+        Returns:
+            [x, y,] v ([array, array,] array): The vortex velocity model along
+                with the associated coordinate values if ``frame`` is specified.
+        """
+
+        # Check the input -- must provide at least a `params` dictionary.
+
+        if params is None:
+            raise ValueError("Must provide model parameters dictionary.")
+
+        # NOTE: Calculate the coordinates needed for this. Note that this won't
+        # be exactly the same draws (if draws > 1) but for a well sampled
+        # posterior and a large enough draw value this should be OK...
+
+        rvals, tvals, _ = self.evaluate_models(samples=samples,
+                                               params=params,
+                                               draws=draws,
+                                               coords_only=True)
+
+        # Model is fully specified and no draws are needed.
+
+        if samples is None:
+            verified_params = self.verify_params_dictionary(params.copy())
+            return self._make_model_vortex(rvals=rvals,
+                                           tvals=tvals,
+                                           params=verified_params,
+                                           frame=frame)
+
+        # Now do a random number of draws. Check to make sure the `params`
+        # dictionary has the same number of free parameters as there are in
+        # `samples`.
+
+        nparam = np.sum([type(params[k]) is int for k in params.keys()])
+        if samples.shape[1] != nparam:
+            warning = "Invalid number of free parameters in 'samples': {:d}."
+            raise ValueError(warning.format(nparam))
+        if not callable(collapse_func):
+            raise ValueError("'collapse_func' must be callable.")
+        verified_params = self.verify_params_dictionary(params.copy())
+
+        # Average over draw of random model samples.
+
+        if isinstance(int(draws) if draws > 1.0 else draws, int):
+            models = []
+            for idx in np.random.randint(0, samples.shape[0], draws):
+                tmp = self._populate_dictionary(samples[idx], verified_params)
+                models += [self._make_model_vortex(rvals=rvals,
+                                                   tvals=tvals,
+                                                   params=tmp,
+                                                   frame=frame)]
+            return collapse_func(models, axis=0)
+
+        # Take a percentile of the samples.
+
+        elif isinstance(draws, float):
+            tmp = np.percentile(samples, draws, axis=0)
+            tmp = self._populate_dictionary(tmp, verified_params)
+            self._make_model(rvals=rvals,
+                             tvals=tvals,
+                             params=tmp,
+                             frame=frame)
+
+        # Otherwise `draws` is invalid.
 
         else:
             raise ValueError("'draws' must be a float or integer.")
@@ -1456,30 +1395,6 @@ class rotationmap(datacube):
 
     # -- VELOCITY PROJECTION -- #
 
-<<<<<<< HEAD
-    def _v0(self, params):
-        """Projected velocity structre."""
-        rvals, tvals, zvals = self.disk_coords(**params)
-        v0 = params['vfunc'](rvals, tvals, zvals, params)
-        return v0 + params['vlsr']
-
-    def _proj_vkep(self, rvals, tvals, zvals, params):
-        """Projected Keplerian rotational velocity profile."""
-        rvals *= sc.au * params['dist']
-        zvals *= sc.au * params['dist']
-        v_phi = sc.G * params['mstar'] * self.msun * np.power(rvals, 2)
-        v_phi = np.sqrt(v_phi * np.power(np.hypot(rvals, zvals), -3))
-        return self._proj_vphi(v_phi, tvals, params)
-
-    def _proj_vpow(self, rvals, tvals, zvals, params):
-        """Projected power-law rotational velocity profile."""
-        v_phi = (rvals * params['dist'] / 100.)**params['vp_q']
-        v_phi *= np.exp(-(rvals / params['vp_rtaper'])**params['vp_qtaper'])
-        v_phi = self._proj_vphi(params['vp_100'] * v_phi, tvals, params)
-        v_rad = (rvals * params['dist'] / 100.)**params['vr_q']
-        v_rad = self._proj_vrad(params['vr_100'] * v_rad, tvals, params)
-        return v_phi + v_rad
-=======
     def _vkep(self, rvals, tvals, zvals, params):
         """Keplerian rotation velocity."""
         r_m = rvals * sc.au * params['dist']
@@ -1529,7 +1444,98 @@ class rotationmap(datacube):
             taper = np.exp(-np.power(taper, 2.0))
             vpow *= np.where(rvals <= r_p, 1.0, taper)
         return vpow
->>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
+
+    def _make_model_vortex(self, rvals, tvals, params, frame=None):
+        """
+        Vortex velocity profile projected onto the requested frame. Can return
+        the model in a range of frames-of-reference through the ``frame``
+        argument. This accepts ``None``, ``'vortex'``, ``'polar'``,
+        ``'face-on'`` and ``'sky'``. If ``frame=None`` (default) then the on-sky
+        projection is returned without associated coordinates.
+
+        Args:
+            rvals (array): 2D array of the deprojected radial disk coordinates
+                in [arcsec].
+            tvals (array): 2D array of the deprojected polar disk coordinates
+                in [radians].
+            params (dict): Dictionary of model parameters.
+            frame (Optional[str]): If provided, the frame of the vortex velocity
+                model to be returned in along with associated coordinates. If no
+                frame is specified just the on-sky projected velocity will be
+                returned.
+
+        Returns:
+            [x, y,] v ([array, array,] array): The vortex velocity model along
+                with the associated coordinate values if ``frame`` is specified.
+        """
+
+        # Loop through (at least 1) layers to extent the azimuthal map for
+        # vortices which overlap.
+
+        x_vortex, y_vortex, v_vortex = [], [], []
+        v_disk_stack, v_proj_stack = [], []
+
+        for i in range(-(self._vortex_layers-1), self._vortex_layers):
+
+            # Shift in the polar angle.
+
+            dtheta = i * 2.0 * np.pi
+            tvals_tmp = tvals + dtheta
+
+            # (x_tmp, y_tmp) describe the vortex cartesian frame.
+
+            x_tmp = params['r0_vortex'] * (tvals_tmp - np.radians(params['p0_vortex']))
+            y_tmp = rvals - params['r0_vortex']
+            x_vortex = np.append(x_vortex, x_tmp)
+            y_vortex = np.append(y_vortex, y_tmp)
+
+            # (r_tmp, p_tmp) describe the disk polar frame.
+
+            r_tmp = np.hypot(x_tmp, params['chi_vortex'] * y_tmp)
+            p_tmp = np.arctan2(x_tmp, params['chi_vortex'] * y_tmp)
+            p_tmp = np.clip(p_tmp, a_min=-np.pi, a_max=np.pi)
+
+            # Model the vortex radial velocity profile as a Gaussian.
+
+            v_tmp = ((r_tmp - params['r_vortex']) / params['w_vortex'])**2
+            v_tmp = params['v_vortex'] * np.exp(-v_tmp)
+            v_vortex = np.append(v_vortex, v_tmp)
+            v_disk_stack += [v_tmp]
+
+            # Project the vortex velocity onto the sky.
+
+            v_proj_tmp = v_tmp * np.cos(tvals_tmp + p_tmp)
+            v_proj_tmp *= np.sin(abs(np.radians(params['inc'])))
+            v_proj_stack += [v_proj_tmp]
+
+        # Combine the different layers by summing them up. Note that this will
+        # give rise to odd effects if the vortex tails are overlapping.
+
+        v_disk = np.sum(v_disk_stack, axis=0)
+        v_proj = np.sum(v_proj_stack, axis=0)
+
+        # Return the vortex model along with the appropriate coordinates.
+        # Note that in the `vortex`, `polar` or  `face-on` frame the velocity
+        # isn't projected along the line of sight.
+
+        if frame is None:
+            return v_proj
+        elif frame == 'vortex':
+            assert x_vortex.shape == y_vortex.shape == v_vortex.shape
+            return x_vortex, y_vortex, v_vortex
+        elif frame == 'polar':
+            assert rvals.shape == tvals.shape == v_disk.shape
+            return rvals, tvals, v_disk
+        elif frame == 'face-on':
+            x_disk = rvals * np.cos(tvals)
+            y_disk = rvals * np.sin(tvals)
+            assert x_disk.shape == y_disk.shape == v_disk.shape
+            return x_disk, y_disk, v_disk
+        elif frame == 'sky':
+            x_sky, y_sky = np.meshgrid(self.xaxis, self.yaxis)
+            assert x_sky.shape == y_sky.shape == v_proj.shape
+            return x_sky, y_sky, v_proj
+
 
     def _proj_vphi(self, v_phi, tvals, params):
         """Project the rotational velocity onto the sky."""
@@ -1541,9 +1547,30 @@ class rotationmap(datacube):
 
     def _make_model(self, params):
         """Build the velocity model from the dictionary of parameters."""
-        v0 = self._v0(params)
+
+        # Get the model pixel-to-disk mappings.
+
+        rvals, tvals, zvals = self.disk_coords(**params)
+
+        # Calculate the velocity profile and project. This includes an
+        # additional component from the vortex.
+
+        vphi = params['vfunc'](rvals, tvals, zvals, params)
+        vphi_proj = self._proj_vphi(vphi, tvals, params)
+        if params['vortex']:
+            vvor_proj = self._make_model_vortex(rvals, tvals, params)
+        else:
+            vvor_proj = 0.0
+
+        v0 = vphi_proj + vvor_proj + params['vlsr']
+
+        # Convolve if necessary.
+
         if params['beam']:
             v0 = datacube._convolve_image(v0, self._beamkernel())
+
+        # Return.
+
         return v0
 
     def deproject_model_residuals(self, samples, params):
@@ -1566,7 +1593,6 @@ class rotationmap(datacube):
         v_z = np.where(zvals >= 0.0, -v_z, v_z)
         return v_p, v_r, v_z
 
-<<<<<<< HEAD
     # -- Functions for obtaining quantitative metrics of the velocity map. -- #
 
     def v_area(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=None, r_max=None,
@@ -2396,7 +2422,7 @@ class rotationmap(datacube):
         hfr = np.nansum(data*distance_to_centre)/np.nansum(data)
 
         return hfr
-=======
+
     # -- UTILITIES -- #
 
     def remove_hot_pixels(self, npix=2, nsigma=1.0, niter=1, replace=True):
@@ -2449,7 +2475,7 @@ class rotationmap(datacube):
         if not replace:
             return data_tmp
         self.data = data_tmp
->>>>>>> 4fce422cd05345134b6be18ed21be4413fe52060
+        self.mask = np.isfinite(self.data)
 
     # -- Functions to help determine the emission height. -- #
 
@@ -2646,7 +2672,29 @@ class rotationmap(datacube):
             self.error = self.error[N0y::N, N0x::N]
             self.mask = self.mask[N0y::N, N0x::N]
 
-    def _shift_center(self, dx=0.0, dy=0.0, data=None, save=True):
+    def remove_clusters(self, N, fill=None):
+        """Remove clusters of spurious points that are smaller in area than N times pix_per_beam. """
+        N = N * self.pix_per_beam
+        data = np.copy(self.data)
+        data[data==fill] = np.nan
+        mask = np.isfinite(data)
+        label, num_features = measurements.label(mask)
+        area = measurements.sum(mask, label, index=np.arange(label.max() + 1))
+        area = area[label]
+        area_mask = area < N
+        data[area_mask] = np.nan
+        self.data = data
+
+    def _rotate_image_coords(self, x, y, theta, ox, oy):
+        """Rotate arrays of coordinates x and y by theta radians about the
+        point (ox, oy).
+
+        """
+        s, c = np.sin(theta), np.cos(theta)
+        x, y = np.asarray(x) - ox, np.asarray(y) - oy
+        return x * c - y * s + ox, x * s + y * c + oy
+
+    def _shift_center(self, dx=0.0, dy=0.0, data=None, save=True, fill=np.nan):
         """
         Shift the center of the image.
 
@@ -2657,31 +2705,132 @@ class rotationmap(datacube):
                 will shift the attached ``rotationmap.data``.
             save (optional[bool]): If True, overwrite ``rotationmap.data``.
         """
-        from scipy.ndimage import shift
         data = self.data.copy() if data is None else data
-        to_shift = np.where(np.isfinite(data), data, 0.0)
-        data = shift(to_shift, [-dy / self.dpix, dx / self.dpix])
-        if save:
-            self.data = data
-        return data
 
-    def _rotate_image(self, PA, data=None, save=True):
-        """
-        Rotate the image anticlockwise about the center.
+        sh, sw = data.shape
 
-        Args:
-            PA (float): Rotation angle in [degrees].
-            data (optional[ndarray]): Data to shift. If nothing is provided,
-                will shift the attached ``rotationmap.data``.
-            save (optional[bool]): If True, overwrite ``rotationmap.data``.
+        # Coordinates of pixels in destination image.
+        d_x, d_y = np.meshgrid(np.arange(sw), np.arange(sh))
+
+        # Corresponding coordinates in source image. Since we are
+        # transforming dest-to-src here, the rotation is negated.
+        sx, sy = d_y - dy / self.dpix, d_x + dx / self.dpix
+
+        # Select nearest neighbour.
+        sx, sy = sx.round().astype(int), sy.round().astype(int)
+
+        # Mask for valid coordinates.
+        mask = (0 <= sx) & (sx < sw) & (0 <= sy) & (sy < sh)
+
+        # Create destination image.
+        dest = np.empty(shape=(sh, sw), dtype=data.dtype)
+
+        # Copy valid coordinates from source image.
+        dest[d_y[mask], d_x[mask]] = data[sy[mask], sx[mask]]
+
+        # Fill invalid coordinates.
+        dest[d_y[~mask], d_x[~mask]] = fill
+
+        if save == True:
+            self.data = dest.T
+
+        return dest.T
+
+    def _rotate_image(self, PA=0.0, data=None, ox=0.0, oy=0.0, fill=np.nan, save=True):
+        """Rotate the image src by theta radians about (ox, oy).
+        Pixels in the result that don't correspond to pixels in src are
+        replaced by the value fill. This function is needed since scipy rotate
+        does not support nan values, and interpolates the data.
+
         """
-        from scipy.ndimage import rotate
         data = self.data.copy() if data is None else data
-        to_rotate = np.where(np.isfinite(data), data, 0.0)
-        data = rotate(to_rotate, PA - 90.0, reshape=False)
-        if save:
-            self.data = data
-        return data
+
+        # Images have origin at the top left, so negate the angle.
+        PA = -(PA-90) /180 * np.pi
+
+        sh, sw = data.shape
+
+        # Rotated positions of the corners of the source image.
+        cx, cy = self._rotate_image_coords([0, sw, sw, 0], [0, 0, sh, sh], PA, ox, oy)
+
+        # Determine dimensions of destination image.
+        dw, dh = (int(np.ceil(c.max() - c.min())) for c in (cx, cy))
+
+        # Coordinates of pixels in destination image.
+        dx, dy = np.meshgrid(np.arange(dw), np.arange(dh))
+
+        # Corresponding coordinates in source image. Since we are
+        # transforming dest-to-src here, the rotation is negated.
+        sx, sy = self._rotate_image_coords(dx + cx.min(), dy + cy.min(), -PA, ox, oy)
+
+        # Select nearest neighbour.
+        sx, sy = sx.round().astype(int), sy.round().astype(int)
+
+        # Mask for valid coordinates.
+        mask = (0 <= sx) & (sx < sw) & (0 <= sy) & (sy < sh)
+
+        # Create destination image.
+        dest = np.empty(shape=(dh, dw), dtype=data.dtype)
+
+        # Copy valid coordinates from source image.
+        dest[dy[mask], dx[mask]] = data[sy[mask], sx[mask]]
+
+        # Fill invalid coordinates.
+        dest[dy[~mask], dx[~mask]] = fill
+
+        # shrink the array back to the original size
+        dest = dest[int((dh-sh)/2):int(dh-(dh-sh)/2),
+                    int((dw-sw)/2):int(dw-(dw-sw)/2)]
+
+        if save == True:
+            self.data = dest
+
+        return dest
+
+
+    # def _shift_center(self, dx=0.0, dy=0.0, data=None, save=True):
+    #     """
+    #     Shift the center of the image.
+    #
+    #     Args:
+    #         dx (optional[float]): shift along x-axis [arcsec].
+    #         dy (optional[float]): Shift along y-axis [arcsec].
+    #         data (optional[ndarray]): Data to shift. If nothing is provided,
+    #             will shift the attached ``rotationmap.data``.
+    #         save (optional[bool]): If True, overwrite ``rotationmap.data``.
+    #     """
+    #     from scipy.ndimage import shift
+    #     data = self.data.copy() if data is None else data
+    #     to_shift = np.where(np.isfinite(data), data, 0.0)
+    #     data = shift(to_shift, [-dy / self.dpix, dx / self.dpix])
+    #     if save:
+    #         self.data = data
+    #     return data
+
+    # def _rotate_image(self, PA, data=None, save=True):
+    #     """
+    #     Rotate the image anticlockwise about the center.
+    #
+    #     Args:
+    #         PA (float): Rotation angle in [degrees].
+    #         data (optional[ndarray]): Data to shift. If nothing is provided,
+    #             will shift the attached ``rotationmap.data``.
+    #         save (optional[bool]): If True, overwrite ``rotationmap.data``.
+    #     """
+    #     from scipy.ndimage import rotate
+    #     data = self.data.copy() if data is None else data
+    #     to_rotate = np.where(np.isfinite(data), data, 0.0)
+    #     data = rotate(to_rotate, PA - 90.0, reshape=False)
+    #     if save:
+    #         self.data = data
+    #     plt.figure()
+    #     plt.imshow(data - np.nanmedian(self.data), cmap='RdBu_r', vmin=-2000, vmax=2000, origin='lower')
+    #     plt.title('Rotated')
+    #     plt.figure()
+    #     plt.imshow(self.data - np.nanmedian(self.data), cmap='RdBu_r', vmin=-2000, vmax=2000, origin='lower')
+    #     plt.title('Original')
+    #     # plt.show()
+    #     return data
 
     # -- DATA I/O -- #
 
@@ -2790,7 +2939,7 @@ class rotationmap(datacube):
 
     def plot_model(self, samples=None, params=None, model=None, draws=0.5,
                    mask=None, ax=None, imshow_kwargs=None, cb_label=None,
-                   return_fig=False, savename=None, downsample=True):
+                   return_fig=False, save_name=None):
         """
         Plot a v0 model using the same scalings as the plot_data() function.
 
@@ -2810,6 +2959,7 @@ class rotationmap(datacube):
             imshow_kwargs (Optional[dict]): Dictionary of imshow kwargs.
             cb_label (Optional[str]): Colorbar label.
             return_fig (Optional[bool]): Return the figure.
+            save_name (Optional[str]): The name of the saved figure.
 
         Returns:
             fig (Matplotlib figure): If ``return_fig`` is ``True``. Can access
@@ -2859,15 +3009,15 @@ class rotationmap(datacube):
 
         self._gentrify_plot(ax)
 
-        if savename is not None:
-            plt.savefig('{0}.png'.format(savename), dpi=300)
+        if save_name is not None:
+            plt.savefig('{0}.png'.format(save_name), dpi=300)
 
         if return_fig:
             return fig
 
     def plot_model_residual(self, samples=None, params=None, model=None,
                             draws=0.5, mask=None, ax=None, imshow_kwargs=None,
-                            return_fig=False, savename=None, downsample=True):
+                            return_fig=False, save_name=None):
         """
         Plot the residual from the provided model.
 
@@ -2886,6 +3036,7 @@ class rotationmap(datacube):
             ax (Optional[AxesSubplot]): Axis to plot onto.
             imshow_kwargs (Optional[dict]): Dictionary of imshow kwargs.
             return_fig (Optional[bool]): Return the figure.
+            save_name (Optional[str]): The name of the saved figure.
 
         Returns:
             fig (Matplotlib figure): If ``return_fig`` is ``True``. Can access
@@ -2937,8 +3088,8 @@ class rotationmap(datacube):
 
         self._gentrify_plot(ax)
 
-        if savename is not None:
-            plt.savefig('{0}.png'.format(savename), dpi=300)
+        if save_name is not None:
+            plt.savefig('{0}_residuals.png'.format(save_name), dpi=300)
 
         if return_fig:
             return fig
@@ -3061,7 +3212,7 @@ class rotationmap(datacube):
     def plot_maxima(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=None,
                     r_max=1.0, r_min=None, smooth=False, through_center=True,
                     plot_axes_kwargs=None, plot_kwargs=None,
-                    return_fig=False):
+                    return_fig=False, return_maxima=True):
         """
         Mark the position of the maximum velocity as a function of radius. This
         can help demonstrate if there is an appreciable bend in velocity
@@ -3126,3 +3277,451 @@ class rotationmap(datacube):
 
         if return_fig:
             return fig
+
+    # -- Functions for obtaining quantitative metrics of the velocity map. -- #
+
+    def v_area(self, x0=0.0, y0=0.0, inc=None, PA=None, vlsr=None, r_max=None,
+                    r_min=0.0, dv=None, smooth=False, mask=None, weight=False,
+                    r_cavity=0.0):
+        """
+        Find the ratio of the area of the velocity map enclosed by
+        specific velocities.
+
+        Args:
+            x0 (Optional[float]): Source center offset along x-axis in
+                [arcsec].
+            y0 (Optional[float]): Source center offset along y-axis in
+                [arcsec].
+            inc (Required[float]): Disk inclination in [degrees].
+            PA (Required[float]): Source position angle in [deg].
+            vlsr (Optional[float]): Systemic velocity in [m/s].
+            r_max (Required[float]): Maximum offset to consider in [arcsec].
+                This value should be set to the effective radius of the disc
+                containing 90% of the flux. (e.g. see Andrews et al. 2018a;
+                Long et al. 2019; Long et al. 2022)
+            r_min (Optional[float]): Minimum offset to consider in [arcsec].
+                The default (and recommended) value is 0.
+            dv (Optional[float]): The spacing between velocity samples.
+            smooth (Optional[bool/float]): Smooth the line of nodes. If
+                ``True``, smoth with the beam kernel, otherwise ``smooth``
+                describes the FWHM of the Gaussian convolution kernel in
+                [arcsec].
+            mask (Optional[array]): An array containing booleans that define
+                a mask to be applied to the data. This is necessary to avoid
+                including noisy parts of the data. Default is obtained from
+                ``get_mask``.
+
+        Returns:
+            array, array: Arrays of ``v_area`` and ``velocity``, which are
+            the normalised area enclosed, ``v_area``, by the ``velocity`` array,
+            respectively.
+        """
+
+        if r_max == None:
+            raise ValueError("r_max must be set in function 'v_area'.")
+        if inc == None:
+            raise ValueError("inc must be set in function 'v_area'.")
+        if PA == None:
+            raise ValueError("PA must be set in function 'v_area'.")
+        if dv == None:
+            raise ValueError("Parameter 'dv' must be specified in function 'v_area'.")
+
+        self.v_area_r_max = r_max
+
+        # Get the data
+        data = self.data.copy()
+
+        origin_x = (np.abs(self.xaxis - x0)).argmin()
+        origin_y = (np.abs(self.yaxis - y0)).argmin()
+        data = self._rotate_image(data=data, PA=PA, ox=origin_x, oy=origin_y, fill=np.nan, save=False)
+
+        mask = self.get_mask(r_min=r_min, r_max=r_max, x0=x0,
+                     y0=y0, inc=inc, PA=90)
+
+        # Default vlsr.
+        if vlsr is None:
+            print("WARNING: vlsr is not set in v_area.")
+            print("This value should be set otherwise artificially inflated values of ")
+            print("v_area may result.")
+            vlsr = np.nanmedian(data)
+
+        # Correct vlsr and apply the mask
+        data = (data - vlsr)
+        data[~mask] = np.nan
+        self.v_area_npix = np.sum(np.where(data != None, 1, 0))
+
+        # Max velocity, but we need to mask the data to not pick spurious pixels
+        if 1.5*r_cavity > 5*self.bmaj:
+            mid_range = 1.5*r_cavity
+        else:
+            mid_range = 5*self.bmaj
+
+        # We expect the highest velocity in the centre
+        # Only look for the fastest point close to the centre
+        mid_mask = self.get_mask(r_min=0.0, r_max=mid_range, x0=x0,
+                     y0=y0, inc=inc, PA=90)
+        data_masked = np.copy(data)
+
+        data_masked[~mid_mask] = np.nan
+        max_v = np.nanmax(np.abs(data_masked))
+
+        nv = int(max_v/dv)
+
+        # v = np.linspace(dv, max_v - max_v/nv, nv)
+        v = np.arange(dv, max_v, dv)
+
+        xaxis = self.xaxis
+        yaxis = self.yaxis
+        x_axis, y_axis = np.meshgrid(xaxis, yaxis, sparse=True)
+        radial_distance = np.sqrt(x_axis**2 + (y_axis/np.cos(np.radians(inc)))**2)
+        # Make a 2D map of the weights
+        if weight == 'binary':
+            weights = self._weighting_function_velocity(radial_distance, r_cavity, r_max)
+        elif weight == 'flat':
+            weights = self._flat_weighting_function_velocity(radial_distance, r_max)
+
+        v_area_data = []
+        n_beam = np.pi * self.header['BMAJ'] * self.header['BMIN'] / self.header['CDELT2'] ** 2
+        for vk in v:
+            n_i = np.sum(np.where(np.abs(data) >= vk, 1, 0))
+            if weight:
+                pos_data_slice = np.where(data > vk, 1, 0) * (weights)
+                neg_data_slice = np.where(-data > vk, 1, 0) * (weights)
+                tmp_va = ((np.sum(pos_data_slice) - np.sum(neg_data_slice))/n_i)
+            else:
+                tmp_va = (np.sum(np.where(data > vk, 1, 0)) - np.sum(np.where(-data > vk, 1, 0)))/n_i
+
+            tmp_va = n_i/(n_beam + n_i) * tmp_va
+            v_area_data.append(tmp_va)
+
+        self.v_area_array = np.array(v_area_data)
+        self.v_area_v = v
+        self.v_area_data = data
+
+        return self.v_area_array, self.v_area_v
+
+    def _weighting_function_velocity(self, r, r_cavity, r_max):
+        weight = np.cos(np.pi/2*((r - 2*r_cavity)/(r_cavity)))**2
+        weight[r<=2*r_cavity] = 1.0
+        weight[r>3*r_cavity] = 0.0
+        return weight
+
+    def _flat_weighting_function_velocity(self, r, r_max):
+        weight = np.ones(np.shape(r))
+        weight[r > r_max] = 0.0
+        return weight
+
+    def sigma_va_sq(self, r_max=None, r_cavity=0.0, mass=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=None,
+                    r_min=0.0, dv=None, weight='flat', smooth=False, mask=None, dist=None):
+
+        if r_cavity == None:
+            r_cavity = r_max
+
+        self.v_area(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr, r_max=r_max,
+                        r_min=r_min, dv=dv, smooth=smooth, mask=mask, weight=weight, r_cavity=r_cavity)
+
+        return 1/len(self.v_area_v) * np.sum(self.v_area_array**2)
+
+    def v_ratio_s(self, x0=0.0, y0=0.0, inc=None, PA=None, vlsr=None, r_max=None,
+                    r_min=None, r_cavity=0.0, smooth=False, through_center=False,
+                    diagnostic_plots=False):
+        """
+        Find the node of velocity maxima along the major axis of the disk.
+
+        Args:
+            x0 (Optional[float]): Source center offset along x-axis in
+                [arcsec].
+            y0 (Optional[float]): Source center offset along y-axis in
+                [arcsec].
+            PA (Required[float]): Source position angle in [deg].
+            vlsr (Required[float]): Systemic velocity in [m/s].
+            r_max (Optional[float]): Maximum offset to consider in [arcsec].
+            r_min (Optional[float]): Minimum offset to consider in [arcsec].
+            smooth (Optional[bool/float]): Smooth the line of nodes. If
+                ``True``, smoth with the beam kernel, otherwise ``smooth``
+                describes the FWHM of the Gaussian convolution kernel in
+                [arcsec].
+            through_center (Optional[bool]): If ``True``, force the central
+                pixel to go through ``(0, 0)``. Recommended value is ``False``.
+            diagnostic_plots (Optional[bool]): If ``True``, show diagnostic plots
+                that can be used to diagnose issues with obtaining v_ratio_s.
+                Recommended that this is set to ``True`` when first analysising
+                data.
+
+        Returns:
+            array, array: Arrays of ``x_sky`` and ``y_sky`` values of the
+            maxima.
+        """
+
+        # Default and required parameters.
+        if vlsr is None:
+            raise ValueError("vlsr must be provided in v_ratio_s.")
+
+        if PA is None:
+            raise ValueError("PA must be provided in v_ratio_s.")
+
+        if inc is None:
+            raise ValueError("inc must be provided in v_ratio_s.")
+
+        r_max = 0.5 * self.xaxis.max() if r_max is None else r_max
+        r_min = 0.0 if r_min is None else r_min
+
+        # Shift and rotate the image.
+        data = self._shift_center(dx=x0, dy=y0, save=False)
+        data = self._rotate_image(PA=PA, data=data, save=False)
+        data = data - vlsr
+
+        # Find the maximum values. Apply some clipping to help.
+        if .75*np.cos(np.radians(inc))*r_cavity < 2*self.bmaj:
+            mask = np.maximum(0.3 * abs(self.xaxis), 2*self.bmaj)
+        else:
+            mask = np.maximum(0.3 * abs(self.xaxis), .75*r_cavity*np.cos(np.radians(inc)))
+
+        mask = abs(self.yaxis)[:, None] > mask[None, :]
+        resi = np.where(mask, 0.0, np.abs(data))
+        resi = np.take(np.arange(len(self.yaxis)), np.nanargmax(resi, axis=0))
+
+        # Gentrification.
+        if through_center:
+            resi[abs(self.xaxis).argmin()] = np.argmin(np.abs(self.yaxis))
+        if smooth:
+            if isinstance(smooth, bool):
+                kernel = np.hanning(self.bmaj / self.dpix)
+                kernel /= kernel.sum()
+            else:
+                from astropy.convolution import Gaussian1DKernel
+                kernel = Gaussian1DKernel(smooth / self.fwhm / self.dpix)
+            resi = np.convolve(resi, kernel, mode='same')
+
+        resi = np.round(resi).astype(int)
+
+        x_mask = np.logical_and(abs(self.xaxis) <= r_max,
+                                abs(self.xaxis) >= r_min)
+
+        xaxis = np.arange(len(self.xaxis))[x_mask]
+
+        # Remove points too far on the opposite side of the disc
+        if r_cavity < 2*self.bmaj:
+            rem_dist = 2*self.bmaj
+        else:
+            rem_dist = r_cavity
+
+        x_id = np.argmin(self.xaxis[xaxis]+rem_dist)
+        m_mask = (data[resi[x_mask], xaxis]<=0) & (self.xaxis[xaxis] <= rem_dist)
+        p_mask = (data[resi[x_mask], xaxis]>0) & (self.xaxis[xaxis] >= -rem_dist)
+
+        resi = resi[x_mask]
+
+        s_mx, s_my = xaxis[m_mask], resi[m_mask]
+        s_px, s_py = xaxis[p_mask], resi[p_mask]
+
+        # Go from abs lowest velocity to highest
+        minus_points = np.flip(data[s_my, s_mx])
+        s_my, s_mx = np.flip(s_my), np.flip(s_mx)
+        pos_points = data[s_py, s_px]
+
+        if diagnostic_plots:
+            plt.figure()
+            plt.imshow(data, cmap='RdBu', vmin=-0.5*np.nanmax(data), vmax=0.5*np.nanmax(data), origin='lower')
+            plt.plot(s_mx, s_my, color='g')
+            plt.plot(s_px, s_py, color='m')
+            plt.scatter(s_mx[0], s_my[0], color='r')
+            plt.scatter(s_px[0], s_py[0], color='orange')
+            plt.title('Before path cuts')
+
+        # Cut out velocity values that change significantly
+        new_pos_points = []
+        new_minus_points = []
+
+        new_s_mx = []
+        new_s_my = []
+        new_s_px = []
+        new_s_py = []
+
+        # path arrays should go from lowest to highest velocity
+        # This cut is done to remove points on the disc where
+        # the velocity shifts from ~maximum velocity to small velocities
+
+        dx = np.abs(self.xaxis[1] - self.xaxis[0])
+        pos_flag = False
+        # We expect the highest velocity in the centre
+        # Only look for the fastest point close to the centre
+        if r_cavity > 3*self.bmaj:
+            mid_range = r_cavity
+        else:
+            mid_range = 3*self.bmaj
+
+        # We expect the highest velocity in the centre
+        # Only look for the fastest point close to the centre
+        mid_mask = (np.abs(self.xaxis[s_px]) < mid_range)
+        max_point = 0.9*np.max(pos_points[mid_mask])
+        for i in range(len(pos_points)):
+            if mid_mask[i]:
+                if pos_points[i] > max_point:
+                    pos_flag = True
+
+            if pos_flag:
+                if pos_points[i] < 0.33*np.max(pos_points[mid_mask]):
+                    break
+
+            new_pos_points.append(pos_points[i])
+            new_s_px.append(s_px[i])
+            new_s_py.append(s_py[i])
+
+        new_s_px = np.array(new_s_px)
+        new_s_py = np.array(new_s_py)
+
+        minus_flag = False
+
+        remove_s_m_index = []
+        remove_s_p_index = []
+
+        mid_mask = (np.abs(self.xaxis[s_mx]) < mid_range)
+        min_point = 0.9*np.min(minus_points[mid_mask])
+        for i in range(len(minus_points)):
+            if mid_mask[i]:
+                if minus_points[i] < min_point:
+                    minus_flag = True
+
+            if minus_flag:
+                if minus_points[i] > 0.33*np.min(minus_points[mid_mask]):
+                    break
+
+            new_minus_points.append(minus_points[i])
+            new_s_mx.append(s_mx[i])
+            new_s_my.append(s_my[i])
+
+        pos_points = np.array(new_pos_points)
+        minus_points = np.array(new_minus_points)
+
+        # Now find any points that are within one beam of each other
+        del_index = 0
+        for i in range(len(minus_points)):
+
+            dist_x = new_s_mx[-i-1+del_index] - new_s_px
+            dist_y = new_s_my[-i-1+del_index] - new_s_py
+
+            dist = np.sqrt(dist_x**2 + dist_y**2)#*dx
+            bmaj = np.ceil(self.bmaj/dx)
+
+            if any(dist<(bmaj)):
+                remove_s_m_index = len(new_s_mx)-1
+                remove_s_p_index = np.argmin(np.abs(dist))
+
+                new_s_mx = np.delete(new_s_mx, remove_s_m_index)
+                new_s_my = np.delete(new_s_my, remove_s_m_index)
+                new_s_px = np.delete(new_s_px, remove_s_p_index)
+                new_s_py = np.delete(new_s_py, remove_s_p_index)
+
+                minus_points = np.delete(minus_points, remove_s_m_index)
+                pos_points = np.delete(pos_points, remove_s_p_index)
+                del_index += 1
+
+        s_mx = new_s_mx
+        s_my = new_s_my
+        s_px = new_s_px
+        s_py = new_s_py
+
+        # Flip so that we add from largest to smallest, and get rid of the outer regions if needed
+        minus_points = np.flip(minus_points)
+        pos_points = np.flip(pos_points)
+
+        v_arr = []
+        for i in range(min([len(s_px), len(s_mx)])):
+            v_arr.append((pos_points[i] + minus_points[i])/(pos_points[i] - minus_points[i]))
+            # print("ratio", v_arr[i], "pos_points[i]", pos_points[i], "minus_points[i]", minus_points[i], )
+
+        self.s_mx = s_mx
+        self.s_my = s_my
+        self.s_px = s_px
+        self.s_py = s_py
+
+        m_max_i = np.argmax(np.abs(s_mx))
+        m_min_i = np.argmin(np.abs(s_mx))
+        m_max_s = s_mx[m_max_i]
+        m_min_s = s_mx[m_min_i]
+        m_indices = np.arange(m_min_s, m_max_s+1)
+
+        p_max_i = np.argmax(np.abs(s_px))
+        p_min_i = np.argmin(np.abs(s_px))
+        p_max_s = s_px[p_max_i]
+        p_min_s = s_px[p_min_i]
+        p_indices = np.arange(p_min_s, p_max_s+1)
+
+        x_mid = (s_mx[-1] + s_px[-1])/2
+        y_mid = (s_my[-1] + s_py[-1])/2
+
+        if len(s_px) >= len(s_mx):
+            use_min = True
+            indices = m_indices
+        else:
+            use_min = False
+            indices = p_indices
+
+        if use_min:
+            self.v_ratio_s_si = np.flip(-self.xaxis[s_mx] - np.min(-self.xaxis[s_mx]))
+            self.v_ratio_s_array = np.array(v_arr)
+        else:
+            self.v_ratio_s_si = self.xaxis[s_px] - np.min(self.xaxis[s_px])
+            self.v_ratio_s_array = np.flip(np.array(v_arr))
+
+        if use_min:
+            dist_from_centre = (m_indices[0] - x_mid) * dx
+        else:
+            dist_from_centre = -(p_indices[-1] - x_mid) * dx
+
+        self.v_ratio_s_si = self.v_ratio_s_si + dist_from_centre
+
+        if diagnostic_plots:
+            plt.figure()
+            plt.imshow(data, cmap='RdBu', vmin=-0.5*np.nanmax(data), vmax=0.5*np.nanmax(data), origin='lower')
+            plt.plot(s_mx, s_my, color='g')
+            plt.plot(s_px, s_py, color='m')
+            plt.scatter(s_mx[0], s_my[0], color='r')
+            plt.scatter(s_px[0], s_py[0], color='orange')
+            plt.plot(np.array([-(self.bmaj)/2, (self.bmaj)/2])/dx+np.argmin(np.abs(self.xaxis)), [np.argmin(np.abs(self.yaxis)), np.argmin(np.abs(self.yaxis))], color='k')
+            print("np.array([-(self.bmaj)/2, (self.bmaj)/2])/dx", np.array([-(self.bmaj)/2, (self.bmaj)/2])/dx)
+            plt.title('After path cuts')
+            plt.figure()
+            plt.plot(self.v_ratio_s_si, self.v_ratio_s_array)
+            plt.title('V ratio (s)')
+
+        if any(self.v_ratio_s_si < -0.5*r_cavity):
+            print("Warning: Some values of the path s in v_ratio_s are very negative.")
+            print("         Recommend checking the diagnostic plots.")
+
+        return self.v_ratio_s_array, self.v_ratio_s_si
+
+    def sigma_vpv_sq(self, r_cavity=None, r_max=None, x0=0.0, y0=0.0, inc=None,
+                     PA=None, vlsr=None, weight='flat', smooth=True, mask=None):
+
+        if r_max == None:
+            r_max = np.max(self.v_ratio_s_si)
+
+        try:
+            vpv = self.v_ratio_s_array.copy()
+            r = self.v_ratio_s_si.copy()
+        except AttributeError:
+            raise AttributeError("v_ratio_s must be called before calling sigma_vpv_sq.")
+
+        if r_cavity == None:
+            r_cavity = r_max
+        if weight == 'binary':
+            weight = self._weighting_function(r, r_cavity, r_max)
+        elif weight == 'flat':
+            weight = self._flat_weighting_function(r, r_max)
+        try:
+            return 1/len(vpv) * np.sum(weight*vpv**2)
+        except ZeroDivisionError:
+            raise ValueError("Length of v_ratio is zero in sigma_vpv_sq.")
+
+    def _flat_weighting_function(self, r, r_max):
+        weight = np.ones(np.shape(r))
+        weight[r>r_max] = 0.0
+        return weight
+
+    def _weighting_function(self, r, r_cavity, r_max):
+        weight = np.cos(np.pi/2*((r - 2*r_cavity)/(3*r_cavity)))**2
+        weight[r<=2*r_cavity] = 1.0
+        weight[r>3*r_cavity] = 0.0
+        return weight

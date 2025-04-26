@@ -33,7 +33,7 @@ class linecube(datacube):
             w_t=None, z_func=None, shadowed=False, phi_min=None, phi_max=None,
             exclude_phi=False, abs_phi=False, mask_frame='disk', user_mask=None,
             beam_spacing=True, niter=1, get_vlos_kwargs=None,
-            weighted_average=True, return_samples=False):
+            weighted_average=True, return_samples=False, repeat_with_mask=0):
         """
         Returns the rotational and, optionally, radial velocity profiles under
         the assumption that the disk is azimuthally symmetric (at least across
@@ -116,6 +116,7 @@ class linecube(datacube):
                 deviation, ``weighted_average=False``.
             return_samples (Optional[bool]): Whether to return the samples
                 instead of combining them.
+            repeat_with_mask (Optional[int]):
 
         Returns:
             samples (array): If ``return_samples=True``. The array of ``niter``
@@ -156,7 +157,8 @@ class linecube(datacube):
                                           mask_frame=mask_frame,
                                           user_mask=user_mask,
                                           beam_spacing=beam_spacing,
-                                          get_vlos_kwargs=get_vlos_kwargs)
+                                          get_vlos_kwargs=get_vlos_kwargs,
+                                          repeat_with_mask=repeat_with_mask)
 
         # Multiple iterations.
 
@@ -188,7 +190,8 @@ class linecube(datacube):
                                           mask_frame=mask_frame,
                                           user_mask=user_mask,
                                           beam_spacing=beam_spacing,
-                                          get_vlos_kwargs=get_vlos_kwargs)
+                                          get_vlos_kwargs=get_vlos_kwargs,
+                                          repeat_with_mask=repeat_with_mask)
                    for _ in range(niter)]
 
         # Just return the samples if requested.
@@ -199,8 +202,7 @@ class linecube(datacube):
         rpnts = samples[0][0]
         profiles = np.array([s[1] for s in samples])
 
-        # Calculate weights, making sure they are finite and not all summing to
-        # zero.
+        # Calculate weights, making sure they are finite with non-zero sum.
 
         if weighted_average:
             weights = [1.0 / s[2] for s in samples]
@@ -234,7 +236,8 @@ class linecube(datacube):
             r_cavity=0.0,  r_taper=np.inf, q_taper=1.0, w_i=None, w_r=None,
             w_t=None, z_func=None, shadowed=False, phi_min=None, phi_max=None,
             exclude_phi=False, abs_phi=False, mask_frame='disk',
-            user_mask=None, beam_spacing=True, get_vlos_kwargs=None):
+            user_mask=None, beam_spacing=True, get_vlos_kwargs=None,
+            repeat_with_mask=0):
         """
         Returns the velocity (rotational and radial) profiles.
 
@@ -257,6 +260,7 @@ class linecube(datacube):
         kw['fit_vrad'] = fit_vrad
         kw['fix_vlsr'] = fix_vlsr
         kw['fit_method'] = fit_method
+        kw['repeat_with_mask'] = repeat_with_mask
 
         # Cycle through the annuli.
 
@@ -286,42 +290,63 @@ class linecube(datacube):
                                        mask_frame=mask_frame,
                                        user_mask=user_mask,
                                        beam_spacing=beam_spacing)
+
             output = annulus.get_vlos(**kw)
-
-            # Parse the outputs.
-
-            par = 2 if fit_vrad else 1
-            output = np.empty(par) if np.all(np.isnan(output)) else output
-            if fit_method.lower() in ['dv', 'snr']:
-                profiles += [output]
-                uncertainties += [np.ones(par) * np.nan]
-            elif fit_method.lower() == 'sho':
-                profiles += [output[0]]
-                uncertainties += [output[1]]
-            elif fit_method.lower() == 'gp':
-                profiles += [output[0]]
-                uncertainties += [output[1]]
+            profiles += [output[0]]
+            uncertainties += [output[1]]
 
         # Make sure the returned arrays are in the (nparam, nrad) form.
 
-        profiles = np.atleast_2d(profiles)
-        uncertainties = np.atleast_2d(uncertainties)
-        if profiles.shape[0] == rpnts.size:
-            profiles = profiles.T
-            uncertainties = uncertainties.T
+        profiles = np.atleast_2d(profiles).T
+        uncertainties = np.atleast_2d(uncertainties).T
+        assert profiles.shape[0] == uncertainties.shape[0] == 3
+        assert profiles.shape[1] == uncertainties.shape[1] == rpnts.size
 
         return rpnts, profiles, uncertainties
 
     # -- ANNULUS FUNCTIONS -- #
 
     def get_annulus(self, r_min, r_max, phi_min=None, phi_max=None,
-                    exclude_phi=False, abs_phi=False, x0=0.0, y0=0.0, inc=0.0,
-                    PA=0.0, z0=0.0, psi=1.0, r_cavity=0.0, r_taper=np.inf,
-                    q_taper=1.0, w_i=None, w_r=None, w_t=None, z_func=None,
-                    shadowed=False, mask_frame='disk', user_mask=None,
-                    beam_spacing=True, annulus_kwargs=None):
+            exclude_phi=False, abs_phi=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
+            z0=0.0, psi=1.0, r_cavity=0.0, r_taper=np.inf, q_taper=1.0,
+            w_i=None, w_r=None, w_t=None, z_func=None, shadowed=False,
+            mask_frame='disk', user_mask=None, beam_spacing=True,
+            annulus_kwargs=None):
         """
         Returns an annulus instance.
+
+        Args:
+            r_min (float): Inner radius of the annulus in [arcsec].
+            r_max (float): Outer radius of the annulus in [arcsec].
+            phi_min (Optional[float]): Minimum polar angle in [X] for the
+                annulus. ``phi`` is measured from the red-shifted major axis and
+                increases in a clockwise direction, spanning ``-pi`` to ``+pi``.
+            phi_max (Optional[float]): Maximum polar angle in [x] for the
+                annulus. ``phi`` is measured from the red-shifted major axis and
+                increases in a clockwise direction, spanning ``-pi`` to ``+pi``.
+            exclude_phi (Optional[bool]): If ``True``, exclude the polar angle
+                range rather than to include it.
+            abs_phi (Optional[bool]): If ``True``, consider only the absolute
+                values of ``phi`` in order to get a symmetric mask.
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [degrees]. A positive
+                inclination denotes a disk rotating clockwise on the sky, while
+                a negative inclination represents a counter-clockwise rotation.
+            PA (Optional[float]): Source position angle [degrees]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            r_cavity (Optional[float]): Outer radius of a cavity. Within this
+                region the emission surface is taken to be zero.
+            r_taper (Optional[float]): Radius for tapered emission surface.
+            q_taper (Optional[float]): Exponent for tapered emission surface.
+            w_i: [coming soon]
+            w_r: [coming soon]
+            w_t: [coming soon]
+
         """
 
         # Calculate and flatten the mask.
@@ -353,8 +378,12 @@ class linecube(datacube):
         mask = mask.flatten()
 
         # Flatten the data and get the deprojected pixel coordinates.
+        # We will record the on-sky pixels, their deprojected disk-frame polar
+        # coordinates and the array indices.
 
         dvals = self.data.copy().reshape(self.data.shape[0], -1)
+        dvals = dvals[:, mask].T
+
         rvals, pvals = self.disk_coords(x0=x0,
                                         y0=y0,
                                         inc=inc,
@@ -368,19 +397,38 @@ class linecube(datacube):
                                         w_r=w_r,
                                         w_t=w_t,
                                         z_func=z_func,
-                                        shadowed=shadowed)[:2]
-        rvals, pvals = rvals.flatten(), pvals.flatten()
-        dvals, rvals, pvals = dvals[:, mask].T, rvals[mask], pvals[mask]
+                                        shadowed=shadowed,
+                                        flatten=True)[:2]
+        rvals, pvals = rvals[mask], pvals[mask]
+
+        xsky, ysky = self.disk_coords(x0=0.0,
+                                      y0=0.0,
+                                      inc=0.0,
+                                      PA=0.0,
+                                      outframe='cartesian',
+                                      flatten=True)[:2]
+        xsky, ysky = xsky[mask], ysky[mask]
+        
+        iidx, jidx = np.meshgrid(np.arange(self.nypix), np.arange(self.nxpix))
+        iidx, jidx = iidx.flatten()[mask], jidx.flatten()[mask]
 
         # Thin down to spatially independent pixels.
 
-        rvals, pvals, dvals = self._independent_samples(beam_spacing,
-                                                        rvals, pvals, dvals)
+        thinned = self._independent_samples(beam_spacing=beam_spacing,
+                                            rvals=rvals,
+                                            pvals=pvals,
+                                            dvals=dvals,
+                                            xsky=xsky,
+                                            ysky=ysky,
+                                            jidx=jidx,
+                                            iidx=iidx)
+        rvals, pvals, dvals, xsky, ysky, jidx, iidx = thinned
 
         # Return the annulus instance.
 
         annulus_kwargs = {} if annulus_kwargs is None else annulus_kwargs
         return annulus(spectra=dvals, pvals=pvals, velax=self.velax, inc=inc,
+                       rvals=rvals, xsky=xsky, ysky=ysky, jidx=jidx, iidx=iidx,
                        **annulus_kwargs)
 
     # -- PLOTTING FUNCTIONS -- #
@@ -465,6 +513,8 @@ class linecube(datacube):
 
         ax.contourf(self.xaxis, self.yaxis, mask, [-.5, .5], **contourf_kwargs)
         ax.contour(self.xaxis, self.yaxis, mask, 1, **contour_kwargs)
+
+    # -- UTILITIES -- #
 
     def get_spectrum(self, coords, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
                      z0=0.0, psi=1.0, z_func=None, frame='sky',
