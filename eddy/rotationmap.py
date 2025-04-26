@@ -3014,6 +3014,9 @@ class rotationmap(datacube):
 
         if return_fig:
             return fig
+        if saveplot_dir:
+            print('Saving plot_model...')
+            plt.savefig(saveplot_dir+'plot_model.png', dpi=350)
 
     def plot_model_residual(self, samples=None, params=None, model=None,
                             draws=0.5, mask=None, ax=None, imshow_kwargs=None,
@@ -3093,6 +3096,9 @@ class rotationmap(datacube):
 
         if return_fig:
             return fig
+        if saveplot_dir:
+            print('Saving plot_model_residual...')
+            plt.savefig(saveplot_dir+'plot_model_residual.png', dpi=350)
 
     def plot_model_surface(self, samples, params,  plot_surface_kwargs=None,
                            mask_with_data=True, return_fig=True):

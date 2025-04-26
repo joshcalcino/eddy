@@ -2,6 +2,7 @@
 
 from .datacube import datacube
 from .annulus import annulus
+from .wedge import wedge
 import numpy as np
 import warnings
 
@@ -198,7 +199,7 @@ class linecube(datacube):
 
         if return_samples:
             return samples
-        
+
         rpnts = samples[0][0]
         profiles = np.array([s[1] for s in samples])
 
@@ -212,10 +213,10 @@ class linecube(datacube):
 
         if np.all(np.sum(weights, axis=0) == 0.0):
             weights = np.ones(profiles.shape)
-        
+
         weights = np.where(np.isfinite(weights), weights, 1.0)
         weights += 1e-10 * np.random.randn(weights.size).reshape(weights.shape)
-        
+
         M = np.sum(weights != 0.0, axis=0)
 
         # Weighted average.
@@ -303,6 +304,107 @@ class linecube(datacube):
         assert profiles.shape[1] == uncertainties.shape[1] == rpnts.size
 
         return rpnts, profiles, uncertainties
+
+    # -- WEDGE FUNCTIONS -- #
+
+    def get_wedge(self, r_min=0.5, r_max=1.0, dr=None, phi_min=0., phi_max=5.,
+                 exclude_phi=False, # TO DO: Check this is ok.
+                 regrid=True,
+                 abs_phi=False, x0=0.0, y0=0.0, inc=0.0,
+                 PA=0.0, z0=0.0, psi=1.0, r_cavity=0.0, r_taper=np.inf,
+                 q_taper=1.0, w_i=None, w_r=None, w_t=None, z_func=None,
+                 shadowed=False, mask_frame='disk', user_mask=None,
+                 beam_spacing=True, wedge_kwargs=None):
+        """
+        Returns a wedge instance.
+
+        Args:
+            phi_min (float): Starting polar angle of the segment of the
+                wedge in [degrees]. Note this is the polar angle, not the
+                position angle. This, together with phi_max, determines the
+                "angular width" of the wedge.
+            phi_max (float): Ending polar angle of the segment of the
+                wedge in [degrees]. Note this is the polar angle, not the
+                position angle.
+            regrid (Optional[bool]): If True, interpolate onto a new radial grid.
+            dr (Optional [float]): Spacing of new radial grid onto which the
+                spectra are interpolated after being fetched, if regrid=True.
+            Other arguments are like get_mask().
+
+        """
+
+        # Calculate and flatten the mask.
+
+        mask = self.get_mask(r_min=r_min,
+                             r_max=r_max,
+                             phi_min=phi_min,
+                             phi_max=phi_max,
+                             exclude_phi=False, # TODO: Check this is ok
+                             abs_phi=abs_phi,
+                             x0=x0,
+                             y0=y0,
+                             inc=inc,
+                             PA=PA,
+                             z0=z0,
+                             psi=psi,
+                             r_cavity=r_cavity,
+                             r_taper=r_taper,
+                             q_taper=q_taper,
+                             w_i=w_i,
+                             w_r=w_r,
+                             w_t=w_t,
+                             z_func=z_func,
+                             shadowed=shadowed,
+                             mask_frame=mask_frame,
+                             user_mask=user_mask)
+        if mask.shape != self.data[0].shape:
+            raise ValueError("mask is incorrect shape: {}.".format(mask.shape))
+        save_mask = mask.copy()
+        mask = mask.flatten()
+
+        # Flatten the data and get the deprojected pixel coordinates.
+
+        dvals = self.data.copy().reshape(self.data.shape[0], -1)
+        rvals, pvals = self.disk_coords(x0=x0,
+                                        y0=y0,
+                                        inc=inc,
+                                        PA=PA,
+                                        z0=z0,
+                                        psi=psi,
+                                        r_cavity=r_cavity,
+                                        r_taper=r_taper,
+                                        q_taper=q_taper,
+                                        w_i=w_i,
+                                        w_r=w_r,
+                                        w_t=w_t,
+                                        z_func=z_func,
+                                        shadowed=shadowed)[:2]
+        rvals, pvals = rvals.flatten(), pvals.flatten()
+        dvals, rvals, pvals = dvals[:, mask].T, rvals[mask], pvals[mask]
+
+        if regrid:
+            # Regrid onto new radial axis
+            dr = self.bmaj if dr is None else dr
+            rnew = np.arange(r_min, r_max, dr)
+
+            idxs = np.argsort(rvals)
+            dvals, rvals = dvals[idxs], rvals[idxs]
+
+            from scipy import interpolate
+            func = interpolate.interp2d(self.velax, rvals, dvals, kind='cubic')
+            dnew = func(self.velax, rnew)
+
+        else:
+            idxs = np.argsort(rvals)
+            rnew, dnew  = rvals[idxs], dvals[idxs]
+
+        # Return the wedge instance.
+
+        wedge_kwargs = {} if wedge_kwargs is None else wedge_kwargs
+        return wedge(spectra=dnew, rvals=rnew, velax=self.velax, inc=inc,
+                      phi_min=phi_min, phi_max=phi_max, mask=save_mask, **wedge_kwargs)
+
+
 
     # -- ANNULUS FUNCTIONS -- #
 
@@ -408,7 +510,7 @@ class linecube(datacube):
                                       outframe='cartesian',
                                       flatten=True)[:2]
         xsky, ysky = xsky[mask], ysky[mask]
-        
+
         iidx, jidx = np.meshgrid(np.arange(self.nypix), np.arange(self.nxpix))
         iidx, jidx = iidx.flatten()[mask], jidx.flatten()[mask]
 

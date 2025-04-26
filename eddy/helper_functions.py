@@ -405,6 +405,7 @@ def SHO_double(x, A, B, C):
 
 
 def plot_walkers(samples, nburnin=None, labels=None, histogram=True, save_name=None):
+
     """
     Plot the walkers to check if they are burning in.
 
@@ -455,6 +456,9 @@ def plot_walkers(samples, nburnin=None, labels=None, histogram=True, save_name=N
         if save_name is not None:
             plt.savefig('{0}_{1}.png'.format(save_name, labels[s]), dpi=300)
 
+        if saveplot_dir:
+            print('Saving plot_walkers...')
+            plt.savefig(saveplot_dir+'plot_walkers'+str(s)+'.png', dpi=350)
 
 def plot_corner(samples, labels=None, quantiles=[0.16, 0.5, 0.84], save_name=None):
     """
