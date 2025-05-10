@@ -68,6 +68,8 @@ class rotationmap(datacube):
         else:
             self.velocity_unit = self.header['bunit'].lower()
 
+        self.downsample = downsample
+
         self.data *= 1e3 if self.velocity_unit == 'km/s' else 1.0
         self.mask = np.isfinite(self.data)
         self._readuncertainty(uncertainty=uncertainty, FOV=FOV)
@@ -770,6 +772,32 @@ class rotationmap(datacube):
             def prior(p):
                 return -0.5 * ((args[0] - p) / args[1])**2
         rotationmap.priors[param] = prior
+
+    def set_SHO_prior(self, param, args, type='flat'):
+        """
+        Set the prior for the given parameter for the SHO fitting. There are
+        two types of priors currently usable, ``'flat'`` which requires
+        ``args=[min, max]`` while for ``'gaussian'`` you need to specify
+        ``args=[mu, sig]``. The three ``params`` which are available are
+        ``'vrot'``, ``'vrad'`` and ``'vlsr'``.
+
+        Args:
+            param (str): Name of the parameter.
+            args (list): Values to use depending on the type of prior.
+            type (optional[str]): Type of prior to use.
+        """
+        type = type.lower()
+        if type not in ['flat', 'gaussian']:
+            raise ValueError("type must be 'flat' or 'gaussian'.")
+        if type == 'flat':
+            def prior(p):
+                if not min(args) <= p <= max(args):
+                    return -np.inf
+                return np.log(1.0 / (args[1] - args[0]))
+        else:
+            def prior(p):
+                return -0.5 * ((args[0] - p) / args[1])**2
+        rotationmap.SHO_priors[param] = prior
 
     def plot_data(self, vmin=None, vmax=None, ivar=None, return_fig=False):
         """

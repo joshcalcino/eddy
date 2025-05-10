@@ -547,11 +547,7 @@ class datacube(object):
                            r_cavity=0.0, z_func=None, shadowed=False,
                            rgrid=None, tgrid=None, griddata_kwargs=None):
         """
-<<<<<<< HEAD
-        Deproject the data onto
-=======
         Deproject the provided data onto a polar grid.
->>>>>>> 4b3fe0971377efb1aa4c8f2e431825eccdb78e72
 
         Args:
             data (array): Data to be deprojected. Must be the same shape as a
@@ -606,20 +602,11 @@ class datacube(object):
                                    r_cavity=r_cavity,
                                    z_func=z_func,
                                    shadowed=shadowed,
-<<<<<<< HEAD
-                                   outframe='cylindrical',
-                                   flatten=True)
-
-        # Deproject onto a polar grid.
-
-        gridded = datacube._griddata(points=(np.degrees(t), r),
-=======
                                    outframe='cylindrical')
 
         # Deproject onto a polar grid.
 
         gridded = datacube._griddata(points=(r.flatten(), t.flatten()),
->>>>>>> 4b3fe0971377efb1aa4c8f2e431825eccdb78e72
                                      values=data.flatten(),
                                      xi=(rgrid[None, :], tgrid[:, None]),
                                      griddata_kwargs=griddata_kwargs)
@@ -1175,11 +1162,7 @@ class datacube(object):
         else:
             print("Pixels appear to be close to spatially independent.")
 
-<<<<<<< HEAD
-        return rvals, pvals, dvals
-=======
         return rvals, pvals, dvals, xsky, ysky, jidx, iidx
->>>>>>> 4b3fe0971377efb1aa4c8f2e431825eccdb78e72
 
     def velocity_to_restframe_frequency(self, velax=None, vlsr=0.0):
         """Return restframe frequency [Hz] of the given velocity [m/s]."""
@@ -1196,8 +1179,6 @@ class datacube(object):
         nu = self.velocity_to_restframe_frequency(velax=[-dV, 0.0, dV])
         return np.mean([abs(nu[1] - nu[0]), abs(nu[2] - nu[1])])
 
-<<<<<<< HEAD
-=======
     # -- GENERAL ANALYSIS FUNCTIONS -- #
 
     def _beam_mask(self, x, y, threshold=0.5, stretch=1.0, response=False):
@@ -1465,7 +1446,6 @@ class datacube(object):
         residual = data - background
         return residual
 
->>>>>>> 4b3fe0971377efb1aa4c8f2e431825eccdb78e72
     # -- PLOTTING FUNCTIONS -- #
 
     @staticmethod
