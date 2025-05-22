@@ -75,6 +75,7 @@ class rotationmap(datacube):
         self.original_xaxis = None
         self.original_yaxis = None
         self.original_data = None
+        self.downsample = downsample
 
         if self.downsample is not None:
             # Deepcopy original data for later use
@@ -746,6 +747,32 @@ class rotationmap(datacube):
                 print("WARNING: Non-linear `rpnts` found. Check results!")
             rbins = np.insert(rpnts + dr, 0, rpnts[0] - dr[0])
         return rpnts, rbins
+
+    def set_SHO_prior(self, param, args, type='flat'):
+        """
+        Set the prior for the given parameter for the SHO fitting. There are
+        two types of priors currently usable, ``'flat'`` which requires
+        ``args=[min, max]`` while for ``'gaussian'`` you need to specify
+        ``args=[mu, sig]``. The three ``params`` which are available are
+        ``'vrot'``, ``'vrad'`` and ``'vlsr'``.
+
+        Args:
+            param (str): Name of the parameter.
+            args (list): Values to use depending on the type of prior.
+            type (optional[str]): Type of prior to use.
+        """
+        type = type.lower()
+        if type not in ['flat', 'gaussian']:
+            raise ValueError("type must be 'flat' or 'gaussian'.")
+        if type == 'flat':
+            def prior(p):
+                if not min(args) <= p <= max(args):
+                    return -np.inf
+                return np.log(1.0 / (args[1] - args[0]))
+        else:
+            def prior(p):
+                return -0.5 * ((args[0] - p) / args[1])**2
+        rotationmap.SHO_priors[param] = prior
 
     def set_prior(self, param, args, type='flat'):
         """
