@@ -77,6 +77,7 @@ class rotationmap(datacube):
         self.original_xaxis = None
         self.original_yaxis = None
         self.original_data = None
+        self.downsample = downsample
 
         if self.downsample is not None:
             # Deepcopy original data for later use
@@ -296,8 +297,6 @@ class rotationmap(datacube):
             plots = ['walkers', 'corner', 'bestfit', 'residual']
         plots = np.atleast_1d(plots)
 
-        if savefigs is not None:
-            savename = self.name
         if 'none' in plots:
             plots = []
         if 'walkers' in plots:
@@ -305,21 +304,21 @@ class rotationmap(datacube):
                 walkers = sampler.chain.T
             else:
                 walkers = np.rollaxis(sampler.chain.copy(), 2)
-            plot_walkers(walkers, nburnin[-1], labels, save_name=save_figures)
+            plot_walkers(walkers, nburnin[-1], labels, save_name=self.name)
         if 'corner' in plots:
-            plot_corner(samples, labels, save_name=save_figures)
+            plot_corner(samples, labels, save_name=self.name)
         if 'bestfit' in plots:
             self.plot_model(samples=samples,
                             params=params,
                             mask=self.ivar,
                             draws=10,
-                            save_name=save_figures)
+                            save_name=self.name)
         if 'residual' in plots:
             self.plot_model_residual(samples=samples,
                                      params=params,
                                      mask=self.ivar,
                                      draws=10,
-                                     save_name=save_figures)
+                                     save_name=self.name)
 
         # Generate the output.
 
@@ -748,6 +747,32 @@ class rotationmap(datacube):
                 print("WARNING: Non-linear `rpnts` found. Check results!")
             rbins = np.insert(rpnts + dr, 0, rpnts[0] - dr[0])
         return rpnts, rbins
+
+    def set_SHO_prior(self, param, args, type='flat'):
+        """
+        Set the prior for the given parameter for the SHO fitting. There are
+        two types of priors currently usable, ``'flat'`` which requires
+        ``args=[min, max]`` while for ``'gaussian'`` you need to specify
+        ``args=[mu, sig]``. The three ``params`` which are available are
+        ``'vrot'``, ``'vrad'`` and ``'vlsr'``.
+
+        Args:
+            param (str): Name of the parameter.
+            args (list): Values to use depending on the type of prior.
+            type (optional[str]): Type of prior to use.
+        """
+        type = type.lower()
+        if type not in ['flat', 'gaussian']:
+            raise ValueError("type must be 'flat' or 'gaussian'.")
+        if type == 'flat':
+            def prior(p):
+                if not min(args) <= p <= max(args):
+                    return -np.inf
+                return np.log(1.0 / (args[1] - args[0]))
+        else:
+            def prior(p):
+                return -0.5 * ((args[0] - p) / args[1])**2
+        rotationmap.SHO_priors[param] = prior
 
     def set_prior(self, param, args, type='flat'):
         """
@@ -1273,7 +1298,7 @@ class rotationmap(datacube):
         header = self.header
 
         residuals = self.get_residuals(params, samples=samples, model=model,
-                                                draws=draws, downsample=downsample)
+                                                draws=draws, downsample=self.downsample)
 
         if filename is None:
             filename = self.path.replace('.fits', '_residuals.fits')
@@ -3037,8 +3062,8 @@ class rotationmap(datacube):
 
         self._gentrify_plot(ax)
 
-        if save_name is not None:
-            plt.savefig('{0}.png'.format(save_name), dpi=300)
+        if save_name:
+            plt.savefig(save_name+'_plot_model.png', dpi=350)
 
         if return_fig:
             return fig
@@ -3082,7 +3107,7 @@ class rotationmap(datacube):
         #     model = self.evaluate_models(samples, params.copy(), draws=draws)
         # vres = self.data - model
         vres = self.get_residuals(params.copy(), samples=samples, model=model,
-                                draws=draws, downsample=downsample)
+                                draws=draws, downsample=self.downsample)
         # plt.imshow(vres)
         # plt.show()
         mask = np.ones(vres.shape) if mask is None else mask
@@ -3117,7 +3142,7 @@ class rotationmap(datacube):
         self._gentrify_plot(ax)
 
         if save_name is not None:
-            plt.savefig('{0}_residuals.png'.format(save_name), dpi=300)
+            plt.savefig(save_name+'_residuals.png', dpi=350)
 
         if return_fig:
             return fig
