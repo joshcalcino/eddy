@@ -4,6 +4,7 @@ from .datacube import datacube
 from .annulus import annulus
 from .wedge import wedge
 import numpy as np
+from scipy.interpolate import interp1d
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -387,12 +388,23 @@ class linecube(datacube):
             dr = self.bmaj if dr is None else dr
             rnew = np.arange(r_min, r_max, dr)
 
+            # Sort by radius
             idxs = np.argsort(rvals)
-            dvals, rvals = dvals[idxs], rvals[idxs]
+            r_sorted = rvals[idxs]
+            d_sorted = dvals[idxs]
 
-            from scipy import interpolate
-            func = interpolate.interp2d(self.velax, rvals, dvals, kind='cubic')
-            dnew = func(self.velax, rnew)
+            # Aggregate duplicate radii (average spectra at identical radii)
+            r_unique, inv = np.unique(r_sorted, return_inverse=True)
+            sum_spec = np.zeros((r_unique.size, d_sorted.shape[1]), dtype=d_sorted.dtype)
+            np.add.at(sum_spec, inv, d_sorted)
+            counts = np.bincount(inv)
+            d_agg = sum_spec / counts[:, None]
+
+            # Interpolate along radius for each velocity channel
+            kind = 'cubic' if r_unique.size >= 4 else 'linear'
+            f = interp1d(r_unique, d_agg, kind=kind, axis=0,
+                         bounds_error=False, fill_value='extrapolate')
+            dnew = f(rnew)
 
         else:
             idxs = np.argsort(rvals)

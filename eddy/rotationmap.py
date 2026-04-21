@@ -9,6 +9,7 @@ import numpy as np
 import scipy.constants as sc
 from scipy.ndimage import measurements
 from .datacube import datacube
+from .belt import belt
 from .helper_functions import plot_walkers, plot_corner, random_p0
 import matplotlib.pyplot as plt
 import warnings
@@ -3778,3 +3779,220 @@ class rotationmap(datacube):
         weight[r<=2*r_cavity] = 1.0
         weight[r>3*r_cavity] = 0.0
         return weight
+
+
+    # -- BELT FUNCTIONS -- #
+    def get_belt(self, r_min=0.5, r_max=1.0, dr=None, phi=0.,
+                 exclude_phi=False,  # TO DO: Check this is ok.
+                 abs_phi=False, x0=0.0, y0=0.0, inc=0.0,
+                 PA=0.0, z0=0.0, psi=1.0, r_cavity=0.0, r_taper=np.inf,
+                 q_taper=1.0, w_i=None, w_r=None, w_t=None, z_func=None,
+                 shadowed=False, mask_frame='disk', user_mask=None,
+                 beam_spacing=True, belt_kwargs=None):
+        """
+        Returns a belt instance.
+
+        Args:
+            phi (float): Starting polar angle of the segment of the
+                wedge in [degrees]. Note this is the polar angle, not the
+                position angle. This, together with phi_max, determines the
+                "angular width" of the wedge.
+            regrid (Optional[bool]): If True, interpolate onto a new radial grid.
+            dr (Optional [float]): Spacing of new radial grid onto which the
+                spectra are interpolated after being fetched, if regrid=True.
+            Other arguments are like get_mask().
+
+        """
+
+        # ------------------------------------------------------------------
+        # Original exploratory code (kept exactly as supplied)
+        # ------------------------------------------------------------------
+        # # Default parameters.
+        # vlsr = np.nanmedian(self.data) if vlsr is None else vlsr
+        # r_max = 0.5 * self.xaxis.max() if r_max is None else r_max
+        # r_min = 0.0 if r_min is None else r_min
+        #
+        # Shift and rotate the image.
+        # data = self._shift_center(dx=x0, dy=y0, save=False)
+        # data = self._rotate_image(PA=PA, data=data, save=False)
+        #
+        # # Find the maximum values. Apply some clipping to help.
+        # mask = np.maximum(0.3 * abs(self.yaxis), self.bmaj)
+        # mask = abs(self.xaxis)[None, :] > mask[:, None]
+        # resi = np.where(mask, 1e10, abs(data - vlsr))
+        # resi = np.take(-self.yaxis, np.argmin(resi, axis=1))
+        #
+        # # Gentrification.
+        # if smooth:
+        #     if isinstance(smooth, bool):
+        #         kernel = np.hanning(self.bmaj / self.dpix)
+        #         kernel /= kernel.sum()
+        #     else:
+        #         from astropy.convolution import Gaussian1DKernel
+        #         kernel = Gaussian1DKernel(smooth / self.fwhm / self.dpix)
+        #     resi = np.convolve(resi, kernel, mode='same')
+        # mask = np.logical_and(abs(self.yaxis) <= r_max,
+        #                       abs(self.yaxis) >= r_min)
+        # x, y = resi[mask], self.yaxis[mask]
+        #
+        # # Rotate back to sky-plane and return.
+        # x, y = self._rotate_coords(x, -y, PA)
+        # return x + x0, y + y0
+
+        from  scipy.interpolate import RegularGridInterpolator
+
+        # ------------------------------------------------------------------
+        # Working implementation (now uses RegularGridInterpolator)
+        # ------------------------------------------------------------------
+        x_axis, y_axis   = self.xaxis.copy(), self.yaxis.copy()
+        original_data    = self.data.copy()
+
+        data_shifted     = self._shift_center(dx=-x0, dy=-y0, data=original_data)
+        data_rot_shifted = self._rotate_image(PA=PA + 90.0, data=data_shifted)
+
+        fill_val_interp  = 0.0
+        data_final_clean = data_rot_shifted.copy()
+        data_final_clean[np.isnan(data_final_clean)] = fill_val_interp
+
+        dr   = self.bmaj if dr is None else dr
+        rnew = np.arange(r_min, r_max, dr)
+        phi_rad = np.deg2rad(phi)
+
+        inc_rad = np.deg2rad(inc)
+        cos_inc = np.cos(inc_rad)
+        if np.isclose(cos_inc, 0.0):
+            cos_inc = 1e-9
+
+        x_target = rnew * np.cos(phi_rad)
+        y_target = rnew * np.sin(phi_rad) / cos_inc
+
+        # ------------------------------------------
+        # build the interpolator on (y_axis, x_axis)
+        interp_func = RegularGridInterpolator(
+            (y_axis, x_axis),
+            data_final_clean,
+            method='linear',
+            bounds_error=False,
+            fill_value=fill_val_interp
+        )
+
+        # 90-deg mismatch was here – swap the columns!
+        points = np.column_stack((x_target, y_target))   #  ← x first, y second
+        dnew   = interp_func(points)
+        # ------------------------------------------
+
+        # # ------------------------------------------------------------------
+        # # Diagnostics (RdBu_r colormap)
+        # # ------------------------------------------------------------------
+        # fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+        #
+        # dx = x_axis[1] - x_axis[0]
+        # dy = y_axis[1] - y_axis[0]
+        # extent = [x_axis.min()-dx/2., x_axis.max()+dx/2.,
+        #           y_axis.min()-dy/2., y_axis.max()+dy/2.]
+        #
+        # im0 = ax[0].imshow(original_data.T, origin='lower', extent=extent,
+        #                    cmap='RdBu_r')
+        # ax[0].set_title('original')
+        # ax[0].plot(x_target + x0, y_target*cos_inc + y0, 'y-', lw=2)
+        # ax[0].set_aspect('equal')
+        # fig.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
+        #
+        # im1 = ax[1].imshow(data_rot_shifted.T, origin='lower', extent=extent,
+        #                    cmap='RdBu_r')
+        # ax[1].set_title('shifted + rotated')
+        # ax[1].plot(x_target, y_target, 'k-', lw=2)
+        # ax[1].set_aspect('equal')
+        # fig.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
+        #
+        # ax[2].plot(rnew, dnew, 'k.-', ms=4)
+        # ax[2].set_xlabel('r')
+        # ax[2].set_ylabel('v')
+        # ax[2].set_title('v(r)')
+        #
+        # fig.tight_layout()
+        # plt.show()
+        # # ------------------------------------------------------------------
+
+        belt_kwargs = {} if belt_kwargs is None else belt_kwargs
+        phis_deg = np.full_like(rnew, phi)
+        self.data = original_data
+        return belt(vvals=dnew, rvals=rnew, pvals=phis_deg, inc=inc,
+                    **belt_kwargs)
+
+        # ------------------------------------------------------------------
+        # Unedited exploratory blocks retained below
+        # ------------------------------------------------------------------
+        #
+        #
+        #
+        # # Flatten the data and get the deprojected pixel coordinates.
+        # data = self.data.copy()
+        # rvals, pvals = self.disk_coords(x0=x0,
+        #                                 y0=y0,
+        #                                 inc=inc,
+        #                                 PA=PA,
+        #                                 z0=z0,
+        #                                 psi=psi,
+        #                                 r_cavity=r_cavity,
+        #                                 r_taper=r_taper,
+        #                                 q_taper=q_taper,
+        #                                 w_i=w_i,
+        #                                 w_r=w_r,
+        #                                 w_t=w_t,
+        #                                 z_func=z_func,
+        #                                 shadowed=shadowed)[:2]
+        #
+        # # rvals, pvals = rvals.flatten(), pvals.flatten()
+        # print(np.shape(rvals), np.shape(pvals), np.shape(data))
+        # # dvals, rvals, pvals = dvals[:, mask].T, rvals[mask], pvals[mask]
+        #
+        # # Flatten coordinates and data for griddata
+        # r_flat = rvals.flatten()
+        # p_flat = pvals.flatten()
+        # data_flat = data.flatten()
+        #
+        # # Create the points array where data is known
+        # points = np.stack((r_flat, p_flat), axis=-1)
+        #
+        # # Create the target radial grid and corresponding phi values
+        # dr = self.bmaj if dr is None else dr
+        # rnew = np.arange(r_min, r_max, dr)
+        # phis = np.full_like(rnew, phi)
+        #
+        # xi = np.stack((rnew, phis), axis=-1)
+        #
+        # print("wasasdas", data_flat[np.isnan(data_flat)])
+        # print("wasasdas", data_flat[~np.isnan(data_flat)])
+        # print(r_flat[~np.isnan(data_flat)])
+        # print(p_flat[~np.isnan(data_flat)])
+        # print("Shape of self.data:", self.data.shape)
+        # print("Is self.data all NaNs?", np.isnan(self.data).all())
+        # print("Any non-NaNs in self.data?", np.any(~np.isnan(self.data)))
+        #
+        # # Use griddata for interpolation
+        # from scipy.interpolate import griddata
+        # dnew = griddata(points, data_flat, xi, method='cubic', fill_value=np.nan)
+        #
+        # belt_kwargs = {} if belt_kwargs is None else belt_kwargs
+        # return belt(vvals=dnew, rvals=rnew, pvals=phis, inc=inc,
+        #             **belt_kwargs)
+        #
+        # # Regrid onto new radial axis
+        # dr = self.bmaj if dr is None else dr
+        # rnew = np.arange(r_min, r_max, dr)
+        # phis = np.array([phi]*len(rnew))
+        #
+        #
+        # from scipy.interpolate import RegularGridInterpolator
+        # # Stack the coordinates into a 2D array, good for interpolation
+        # xi = np.stack((rnew, phis), axis=-1)
+        # print(xi)
+        #
+        # func = RegularGridInterpolator((rvals, pvals), data, method='cubic')
+        # dnew = func(xi)
+        #
+        # belt_kwargs = {} if belt_kwargs is None else belt_kwargs
+        # return belt(vvals=dnew, rvals=rnew, pvals=phis, inc=inc,
+        #             mask=save_mask, **belt_kwargs)
+
